@@ -1,14 +1,13 @@
 {
   "name": "codek",
   "version": "1.0.0",
-  "description": "命令行工具",
-  "license": "ISC",
-  "author": "kt",
+  "bin": {
+    "codek": "dist/cli.js"
+  },
   "type": "module",
-  "main": "src/index.ts",
   "scripts": {
-    "start": "node --env-file=.env src/index.ts",
-    "test": "codek"
+    "build": "tsc",
+    "start": "node dist/cli.js"
   },
   "dependencies": {
     "openai": "^6.35.0"
