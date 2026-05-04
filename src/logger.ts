@@ -1,21 +1,31 @@
+let verbose = false;
+
+export function setVerbose(value: boolean) {
+    verbose = value;
+}
+
+function write(stream: NodeJS.WriteStream, label: string, msg: string) {
+    stream.write(`[${label}] ${msg}\n`);
+}
+
 export const logger = {
     info(msg: string) {
-        console.log(`🟦 [INFO] ${msg}`);
+        if (verbose) write(process.stderr, 'info', msg);
     },
 
     step(msg: string) {
-        console.log(`🟨 [STEP] ${msg}`);
+        if (verbose) write(process.stderr, 'step', msg);
     },
 
     tool(msg: string) {
-        console.log(`🟩 [TOOL] ${msg}`);
+        if (verbose) write(process.stderr, 'tool', msg);
     },
 
     warn(msg: string) {
-        console.log(`🟧 [WARN] ${msg}`);
+        write(process.stderr, 'warn', msg);
     },
 
     error(msg: string) {
-        console.log(`🟥 [ERROR] ${msg}`);
+        write(process.stderr, 'error', msg);
     },
 };

@@ -1,11 +1,13 @@
 import * as readline from 'readline';
 
 const dangerousPatterns = [
-    /^rm\s+/,
-    /^rm$/,
+    /^rm\s+(-[^\s]*[rf][^\s]*\s+)?(\/|\.)/,
     /^sudo/,
     /^dd\s+/,
     /^mkfs/,
+    /^chmod\s+(-R\s+)?777/,
+    /^chown\s+(-R\s+)?/,
+    /\b>\s*\/dev\/sd[a-z]/,
     /^:\(\)\{.*\|\:.*\&\}/, // fork bomb
 ];
 
@@ -13,13 +15,13 @@ export function isDangerous(cmd: string): boolean {
     return dangerousPatterns.some(p => p.test(cmd.trim()));
 }
 
-// 👇 人工确认机制（CLI交互）
-export async function confirmExecution(cmd: string): Promise<boolean> {
+export async function confirmExecution(cmd: string, autoApprove = false): Promise<boolean> {
+    if (autoApprove) return true;
     if (!isDangerous(cmd)) return true;
 
-    console.log(`\n⚠️ 危险命令检测到：`);
-    console.log(`👉 ${cmd}`);
-    console.log(`是否允许执行？(yes/no)`);
+    console.error('\nDangerous command detected:');
+    console.error(cmd);
+    console.error('Allow execution? Type "yes" to continue.');
 
     const rl = readline.createInterface({
         input: process.stdin,
@@ -27,7 +29,7 @@ export async function confirmExecution(cmd: string): Promise<boolean> {
     });
 
     return new Promise((resolve) => {
-        rl.question('> ', (answer) => {
+        rl.question('> ', (answer: string) => {
             rl.close();
             resolve(answer.trim().toLowerCase() === 'yes');
         });
