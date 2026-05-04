@@ -13,65 +13,80 @@ const client = new OpenAI({
     baseURL: process.env['OPENAI_BASE_URL'],
 });
 
-// 👉 对话上下文
+// 对话上下文
 const messages = [
     {
         role: 'system',
         content: `
-你是一个智能代理 codek。
-
-你可以通过执行命令来完成任务。
+你是一个智能代理 codek，可以执行 shell 和 git 命令完成任务。
 
 你必须始终返回 JSON：
 
 1. 执行命令：
-{ "type": "command", "content": "bash命令" }
+{ "type": "command", "content": "命令" }
 
 2. 最终回答：
-{ "type": "text", "content": "最终答案" }
+{ "type": "text", "content": "最终结果" }
 
-当你收到 command_result 时：
+标准 git 提交流程：
+1. git status
+2. git diff
+3. git add .
+4. git commit -m "message"
+
+当你收到 command_result：
 - 分析结果
-- 判断是否需要继续执行命令
-- 或直接输出最终答案
+- 判断是否继续执行
+- 或输出最终答案
 
-⚠️ 不要使用 markdown，不要使用 \`\`\`json
-⚠️ 不要解释，只输出 JSON
+⚠️ 不要 markdown
+⚠️ 不要解释
+⚠️ 只输出 JSON
 `
     }
 ];
 
-// ✅ 白名单
-const allowedCommands = ['ls', 'pwd', 'whoami', 'date'];
+// ✅ 允许命令
+const allowedBaseCommands = ['ls', 'pwd', 'whoami', 'date'];
+const allowedGitSubCommands = ['status', 'diff', 'log', 'add', 'commit'];
 
-// ❌ 危险命令
-const blockedCommands = ['rm', 'sudo', 'mv', 'dd', 'mkfs'];
+// ❌ 禁止命令
+const blockedCommands = ['rm', 'sudo', 'dd', 'mkfs'];
 
-// ❌ 禁止符号（防止组合攻击）
-const blockedPatterns = ['&&', '|', '>', '<', ';'];
+// ❌ 禁止组合
+const blockedPatterns = ['&&', '|', ';'];
 
+// ✅ 安全检查
 function isSafeCommand(cmd: string) {
     const trimmed = cmd.trim();
 
-    // 必须是白名单开头
-    const allowed = allowedCommands.some(c => trimmed.startsWith(c));
-    if (!allowed) return false;
-
-    // 禁止危险命令
     if (blockedCommands.some(c => trimmed.includes(c))) return false;
-
-    // 禁止组合符号
     if (blockedPatterns.some(p => trimmed.includes(p))) return false;
 
-    return true;
+    if (allowedBaseCommands.some(c => trimmed.startsWith(c))) return true;
+
+    if (trimmed.startsWith('git')) {
+        const parts = trimmed.split(/\s+/);
+        if (parts.length < 2) return false;
+
+        const sub = parts[1];
+        if (!allowedGitSubCommands.includes(sub)) return false;
+
+        if (sub === 'commit') {
+            return trimmed.includes('-m');
+        }
+
+        return true;
+    }
+
+    return false;
 }
 
-// 👉 提取 JSON
+// ✅ JSON 提取
 function extractJSON(text: string) {
     const match = text.match(/```json\s*([\s\S]*?)\s*```/);
     if (match) return match[1];
 
-    // fallback：抓第一个 {}
     const match2 = text.match(/\{[\s\S]*\}/);
     if (match2) return match2[0];
 
@@ -80,27 +95,23 @@ function extractJSON(text: string) {
 
 // 👉 执行命令
 function runCommand(cmd: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-        exec(cmd, { timeout: 5000 }, (error, stdout, stderr) => {
-            if (error) {
-                reject(stderr || error.message);
-            } else {
-                resolve(stdout || stderr);
-            }
+    return new Promise((resolve) => {
+        exec(cmd, { timeout: 10000 }, (error, stdout, stderr) => {
+            resolve((stdout || '') + (stderr || ''));
         });
     });
 }
 
-// 🚀 Agent 核心循环
-async function runAgent(userInput: string) {
-    messages.push({ role: 'user', content: userInput });
+// 🚀 Agent 主循环
+async function runAgent(input: string) {
+    messages.push({ role: 'user', content: input });
 
     let steps = 0;
-    const MAX_STEPS = 5; // ✅ 限制执行次数
+    const MAX_STEPS = 15; // 循环次数
 
     while (true) {
         if (steps++ > MAX_STEPS) {
-            console.log('⚠️ 超过最大执行步数，强制停止');
+            console.log('⚠️ 超过最大执行步数，停止');
             break;
         }
 
@@ -120,7 +131,7 @@ async function runAgent(userInput: string) {
             break;
         }
 
-        // ✅ 最终回答
+        // ✅ 最终输出
         if (parsed.type === 'text') {
             console.log('AI>', parsed.content);
 
@@ -139,67 +150,75 @@ async function runAgent(userInput: string) {
             console.log('⚡ 执行:', cmd);
 
             if (!isSafeCommand(cmd)) {
-                console.log('❌ 命令被拒绝（不安全）');
+                console.log('❌ 命令被拒绝');
 
                 messages.push({
                     role: 'assistant',
                     content: JSON.stringify({
                         type: 'command_result',
-                        content: '命令被拒绝（不安全）'
+                        content: '命令被拒绝'
                     })
                 });
 
                 continue;
             }
 
-            try {
-                const result = await runCommand(cmd);
+            const result = await runCommand(cmd);
 
-                console.log('📦 结果:\n', result);
+            console.log('📦 结果:\n', result);
 
-                messages.push({
-                    role: 'assistant',
-                    content: JSON.stringify({
-                        type: 'command_result',
-                        content: result
-                    })
-                });
+            messages.push({
+                role: 'assistant',
+                content: JSON.stringify({
+                    type: 'command_result',
+                    content: result
+                })
+            });
 
-                continue; // 👉 继续思考
+            // ✅ commit 收尾逻辑（关键）
+            if (cmd.startsWith('git commit')) {
+                if (result.includes('nothing to commit')) {
+                    console.log('⚠️ 没有可提交内容');
 
-            } catch (err) {
-                const errorMsg = String(err);
+                    messages.push({
+                        role: 'assistant',
+                        content: JSON.stringify({
+                            type: 'text',
+                            content: '没有需要提交的更改'
+                        })
+                    });
+                } else {
+                    console.log('✅ 提交完成');
 
-                console.log('❌ 执行失败:', errorMsg);
+                    messages.push({
+                        role: 'assistant',
+                        content: JSON.stringify({
+                            type: 'text',
+                            content: '已完成 git 提交'
+                        })
+                    });
+                }
 
-                messages.push({
-                    role: 'assistant',
-                    content: JSON.stringify({
-                        type: 'command_result',
-                        content: errorMsg
-                    })
-                });
-
-                continue;
+                break;
             }
+
+            continue;
         }
     }
 }
 
-// CLI 入口
+// CLI
 console.log('开始聊天（输入 exit 退出）');
 rl.prompt();
 
 rl.on('line', async (input) => {
-    const text = input.trim();
-
-    if (text === 'exit') {
+    if (input.trim() === 'exit') {
         rl.close();
         return;
     }
 
     try {
-        await runAgent(text);
+        await runAgent(input);
     } catch (err) {
         console.error('出错:', err);
     }
