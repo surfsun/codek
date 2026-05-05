@@ -27,7 +27,7 @@ export function parseShellApprovalMode(value: string | undefined): ShellApproval
 
 const defaultConfig: CodekConfig = {
     model: process.env.CODEK_MODEL || process.env.OPENAI_MODEL || 'deepseek-v4-flash',
-    maxSteps: Number(process.env.CODEK_MAX_STEPS || 20),
+    maxSteps: Number(process.env.CODEK_MAX_STEPS || 50),
     cwd: path.resolve(process.cwd()),
     apiKey: process.env.OPENAI_API_KEY || 'codek-local',
     baseURL: process.env.OPENAI_BASE_URL || 'http://127.0.0.1:1234/v1',
