@@ -155,13 +155,31 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
             continue;
         }
 
-        if (line === '/log' || line.startsWith('/log ')) {
-            const mode = line.slice('/log'.length).trim();
+        if (line === '/log') {
+            const isLoggingOn = getVerbose();
+            output.write(`\n--- Log Output Status ---\n`);
+            output.write(`Current status: ${isLoggingOn ? 'ON' : 'OFF'}\n`);
+            output.write('1. On (打开日志)\n');
+            output.write('2. Off (关闭日志)\n');
+            output.write('------------------------\n');
+            // In a real TUI, we would use advanced readline features here for arrow key navigation.
+            // For now, we prompt the user to enter 1 or 2.
+            const choice = await rl.question('Select option (1/2): ');
 
-            if (!mode) {
-                output.write(`Log output is ${getVerbose() ? 'on' : 'off'}.\n`);
-                continue;
+            if (choice === '1') {
+                setVerbose(true);
+                output.write('Log output enabled.\n');
+            } else if (choice === '2') {
+                setVerbose(false);
+                output.write('Log output disabled.\n');
+            } else {
+                output.write('Invalid selection. Log status remains unchanged.\n');
             }
+            continue;
+        }
+
+        if (line.startsWith('/log ')) {
+            const mode = line.slice('/log'.length).trim();
 
             if (mode === 'on') {
                 setVerbose(true);
@@ -175,13 +193,7 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
                 continue;
             }
 
-            if (mode === 'toggle') {
-                setVerbose(!getVerbose());
-                output.write(`Log output ${getVerbose() ? 'enabled' : 'disabled'}.\n`);
-                continue;
-            }
-
-            output.write('Usage: /log, /log on, /log off, /log toggle\n');
+            output.write('Usage: /log, /log on, or /log off\n');
             continue;
         }
 
