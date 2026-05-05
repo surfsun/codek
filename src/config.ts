@@ -32,7 +32,7 @@ const defaultConfig: CodekConfig = {
     apiKey: process.env.OPENAI_API_KEY || 'codek-local',
     baseURL: process.env.OPENAI_BASE_URL || 'http://127.0.0.1:1234/v1',
     shellApprovalMode: 'ask',
-    verbose: false,
+    verbose: true,
 };
 
 let config = { ...defaultConfig };

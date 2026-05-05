@@ -1,4 +1,4 @@
-let verbose = false;
+let verbose = true;
 
 export function setVerbose(value: boolean) {
     verbose = value;
