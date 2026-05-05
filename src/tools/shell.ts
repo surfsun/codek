@@ -2,6 +2,8 @@ import { exec } from 'child_process';
 import { ShellApprovalMode } from '../config.js';
 import { confirmExecution, isDangerous } from '../security/guard.js';
 
+const sessionApprovedCommands = new Set<string>();
+
 export type ShellOptions = {
     cwd: string;
     approvalMode: ShellApprovalMode;
@@ -22,10 +24,20 @@ export async function runShell(cmd: string, options: ShellOptions): Promise<stri
         reason = dangerous ? 'dangerous-command' : 'model-requested';
     }
 
-    const ok = !needsApproval || await confirmExecution(cmd, reason);
+    if (needsApproval && sessionApprovedCommands.has(cmd)) {
+        needsApproval = false;
+    }
 
-    if (!ok) {
-        return 'Command rejected by user.';
+    if (needsApproval) {
+        const decision = await confirmExecution(cmd, reason);
+
+        if (decision === 'reject') {
+            return 'Command rejected by user. Stop the current task and return a brief final answer.';
+        }
+
+        if (decision === 'allow-session') {
+            sessionApprovedCommands.add(cmd);
+        }
     }
 
     return new Promise((resolve) => {

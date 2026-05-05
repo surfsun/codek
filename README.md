@@ -77,6 +77,14 @@ model   let the model decide whether a shell command needs approval; dangerous c
 allow   always execute shell commands
 ```
 
+When approval is required, choose:
+
+```text
+1   execute once
+2   always execute this exact command for the current session
+3   do not execute and stop the current task
+```
+
 `--yes` is kept as a shortcut for `--shell-approval allow`.
 
 Interactive commands:

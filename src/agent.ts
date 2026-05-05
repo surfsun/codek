@@ -21,6 +21,7 @@ Work like Codex or Claude Code in a local project:
 - Do not commit unless the user explicitly asks for a commit.
 - Before editing an existing file, read it first and prefer edit_file so unrelated content is preserved.
 - In shell model approval mode, set requireApproval=true for commands that modify files, install dependencies, access the network, publish, commit, or could be destructive.
+- If a tool result says the user rejected a command, stop the current task and return a brief final answer.
 - When finished, return a concise final answer in the user's language.
 
 Use the provided tools when you need project context or local execution.`;

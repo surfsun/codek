@@ -127,7 +127,7 @@ function normalizeConfig(options: CliOptions): CodekConfig {
 }
 
 async function runInteractive(agent: CodekAgent, config: CodekConfig) {
-    const rl = createInterface({ input, output });
+    let rl = createInterface({ input, output });
     output.write(`codek ${readPackageVersion()} (${config.model})\n`);
     output.write(`cwd: ${config.cwd}\n`);
     output.write(`api: ${config.baseURL}\n`);
@@ -159,8 +159,13 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
             continue;
         }
 
-        const result = await agent.run(line);
-        output.write(`${result}\n\n`);
+        rl.close();
+        try {
+            const result = await agent.run(line);
+            output.write(`${result}\n\n`);
+        } finally {
+            rl = createInterface({ input, output });
+        }
     }
 }
 
