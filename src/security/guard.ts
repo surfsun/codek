@@ -1,4 +1,5 @@
 import * as readline from 'readline';
+import { stdin as input, stdout as output } from 'process';
 
 const dangerousPatterns = [
     /^rm\s+(-[^\s]*[rf][^\s]*\s+)?(\/|\.)/,
@@ -18,6 +19,101 @@ export function isDangerous(cmd: string): boolean {
     return dangerousPatterns.some(p => p.test(cmd.trim()));
 }
 
+const approvalOptions: Array<{ label: string; decision: ApprovalDecision }> = [
+    { label: '1. Execute once', decision: 'allow-once' },
+    { label: '2. Always execute this exact command for the current session', decision: 'allow-session' },
+    { label: '3. Do not execute and stop the current task', decision: 'reject' },
+];
+
+function decisionFromChoice(choice: string): ApprovalDecision {
+    if (!choice) return 'allow-once';
+    if (choice === '1') return 'allow-once';
+    if (choice === '2') return 'allow-session';
+    return 'reject';
+}
+
+function renderApprovalOptions(selectedIndex: number) {
+    output.write('Choose an action:\n');
+    for (let index = 0; index < approvalOptions.length; index++) {
+        const prefix = index === selectedIndex ? '\x1b[7m' : '';
+        const suffix = index === selectedIndex ? '\x1b[0m' : '';
+        output.write(`  ${prefix}${approvalOptions[index].label}${suffix}\n`);
+    }
+    output.write('Use ↑/↓ and Enter. Default: 1\n');
+}
+
+function clearRenderedOptions() {
+    output.write('\x1b[5A');
+    output.write('\x1b[J');
+}
+
+async function promptApprovalFallback(): Promise<ApprovalDecision> {
+    const rl = readline.createInterface({
+        input,
+        output,
+    });
+
+    return new Promise((resolve) => {
+        rl.question('> ', (answer: string) => {
+            rl.close();
+            resolve(decisionFromChoice(answer.trim()));
+        });
+    });
+}
+
+async function promptApprovalSelect(): Promise<ApprovalDecision> {
+    if (!input.isTTY || !output.isTTY || !input.setRawMode) {
+        return promptApprovalFallback();
+    }
+
+    let selectedIndex = 0;
+    readline.emitKeypressEvents(input);
+    input.setRawMode(true);
+    input.resume();
+    renderApprovalOptions(selectedIndex);
+
+    return new Promise((resolve) => {
+        const finish = (decision: ApprovalDecision) => {
+            input.setRawMode(false);
+            input.off('keypress', onKeypress);
+            output.write('\n');
+            resolve(decision);
+        };
+
+        const onKeypress = (str: string, key: readline.Key) => {
+            if (key.name === 'up') {
+                selectedIndex = (selectedIndex + approvalOptions.length - 1) % approvalOptions.length;
+                clearRenderedOptions();
+                renderApprovalOptions(selectedIndex);
+                return;
+            }
+
+            if (key.name === 'down') {
+                selectedIndex = (selectedIndex + 1) % approvalOptions.length;
+                clearRenderedOptions();
+                renderApprovalOptions(selectedIndex);
+                return;
+            }
+
+            if (key.name === 'return') {
+                finish(approvalOptions[selectedIndex].decision);
+                return;
+            }
+
+            if (str === '1' || str === '2' || str === '3') {
+                finish(decisionFromChoice(str));
+                return;
+            }
+
+            if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+                finish('reject');
+            }
+        };
+
+        input.on('keypress', onKeypress);
+    });
+}
+
 export async function confirmExecution(cmd: string, reason: ApprovalReason): Promise<ApprovalDecision> {
     const labels: Record<ApprovalReason, string> = {
         'always-ask': 'Approval required by shell policy.',
@@ -27,32 +123,5 @@ export async function confirmExecution(cmd: string, reason: ApprovalReason): Pro
 
     console.error(`\n${labels[reason]}`);
     console.error(cmd);
-    console.error('Choose an action:');
-    console.error('  1. Execute once');
-    console.error('  2. Always execute this exact command for the current session');
-    console.error('  3. Do not execute and stop the current task');
-
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-
-    return new Promise((resolve) => {
-        rl.question('> ', (answer: string) => {
-            rl.close();
-            const choice = answer.trim();
-
-            if (choice === '1') {
-                resolve('allow-once');
-                return;
-            }
-
-            if (choice === '2') {
-                resolve('allow-session');
-                return;
-            }
-
-            resolve('reject');
-        });
-    });
+    return promptApprovalSelect();
 }

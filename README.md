@@ -80,10 +80,12 @@ allow   always execute shell commands
 When approval is required, choose:
 
 ```text
-1   execute once
-2   always execute this exact command for the current session
-3   do not execute and stop the current task
+Enter / 1   execute once
+2           always execute this exact command for the current session
+3           do not execute and stop the current task
 ```
+
+In an interactive terminal, option 1 is selected by default. Use the up/down arrow keys to switch options, then press Enter.
 
 `--yes` is kept as a shortcut for `--shell-approval allow`.
 
