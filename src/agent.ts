@@ -1,9 +1,24 @@
 import OpenAI from 'openai';
 import type {
     ChatCompletionMessageFunctionToolCall,
-    ChatCompletionMessageParam,
+    ChatCompletionSystemMessageParam,
+    ChatCompletionUserMessageParam,
+    ChatCompletionToolMessageParam,
+    ChatCompletionAssistantMessageParam,
     ChatCompletionTool,
 } from 'openai/resources/chat/completions';
+
+// DeepSeek reasoning models return reasoning_content on assistant messages,
+// and the API requires it to be passed back in subsequent requests.
+type DeepSeekAssistantMessage = ChatCompletionAssistantMessageParam & {
+    reasoning_content?: string | null;
+};
+
+type CodekMessage =
+    | ChatCompletionSystemMessageParam
+    | ChatCompletionUserMessageParam
+    | ChatCompletionToolMessageParam
+    | DeepSeekAssistantMessage;
 import { CodekConfig } from './config.js';
 import { logger } from './logger.js';
 import { createTools, runTool } from './runtime.js';
@@ -95,7 +110,7 @@ export class CodekAgent {
     private client: OpenAI | null = null;
     private readonly tools: ToolDefinition[];
     private readonly openAITools: ChatCompletionTool[];
-    private messages: ChatCompletionMessageParam[];
+    private messages: CodekMessage[];
 
     constructor(private readonly config: CodekConfig) {
         this.tools = createTools(config);
@@ -130,6 +145,7 @@ export class CodekAgent {
 
             const message = response.choices[0]?.message;
             const text = message?.content ?? '';
+            const reasoningContent = (message as any)?.reasoning_content ?? undefined;
             logger.info(`model: ${text}`);
 
             if (!message) {
@@ -144,7 +160,7 @@ export class CodekAgent {
                 const fallbackAction = parseFallbackAction(text);
 
                 if (fallbackAction?.type === 'tool') {
-                    this.messages.push({ role: 'assistant', content: text });
+                    this.messages.push({ role: 'assistant', content: text, reasoning_content: reasoningContent });
 
                     const result = await runTool(this.tools, fallbackAction.name, fallbackAction.input ?? {});
                     successfulTool ||= result.ok;
@@ -164,7 +180,7 @@ export class CodekAgent {
 
                 if (fallbackAction?.type === 'final') {
                     if (needsTool && !successfulTool) {
-                        this.messages.push({ role: 'assistant', content: text });
+                        this.messages.push({ role: 'assistant', content: text, reasoning_content: reasoningContent });
                         this.messages.push({
                             role: 'user',
                             content: 'You returned a final answer for a task that requires inspecting or changing the project, but no local tool has succeeded in this run. Use a native tool call, or return exactly one fallback JSON tool action.',
@@ -176,7 +192,7 @@ export class CodekAgent {
                 }
 
                 if (needsTool && !successfulTool) {
-                    this.messages.push({ role: 'assistant', content: text });
+                    this.messages.push({ role: 'assistant', content: text, reasoning_content: reasoningContent });
                     this.messages.push({
                         role: 'user',
                         content: 'This task requires inspecting or changing the local project. Do not explain or claim completion yet. Use a native tool call, or return exactly one fallback JSON tool action.',
@@ -190,6 +206,7 @@ export class CodekAgent {
             this.messages.push({
                 role: 'assistant',
                 content: text,
+                reasoning_content: reasoningContent,
                 tool_calls: message.tool_calls,
             });
 
