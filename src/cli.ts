@@ -3,7 +3,7 @@ import { createInterface } from 'readline/promises';
 import { readFileSync } from 'fs';
 import { stdin as input, stdout as output } from 'process';
 import { CodekAgent } from './agent.js';
-import { CodekConfig, getConfig, setConfig } from './config.js';
+import { CodekConfig, getConfig, parseShellApprovalMode, setConfig } from './config.js';
 import { loadDotEnv } from './env.js';
 import { setVerbose } from './logger.js';
 
@@ -20,12 +20,17 @@ Usage:
   codek --cwd /path/to/project "inspect this repo"
 
 Options:
-  --model <name>       model name, defaults to CODEK_MODEL or gpt-4.1-mini
+  --model <name>       model name, defaults to CODEK_MODEL or google/gemma-4-e4b
   --cwd <path>         working directory, defaults to current directory
   --base-url <url>     OpenAI-compatible API URL, defaults to local service
   --api-key <key>      API key, defaults to OPENAI_API_KEY or codek-local
   --max-steps <n>      maximum agent tool steps, defaults to 20
-  --yes, -y            approve dangerous shell commands
+  --shell-approval <mode>
+                       shell approval mode: ask, model, or allow
+                       ask: ask before every command
+                       model: model decides, dangerous commands still ask
+                       allow: always execute commands
+  --yes, -y            alias for --shell-approval allow
   --verbose, -v        print model/tool trace to stderr
   --version            print version
   --help, -h           show help
@@ -75,9 +80,12 @@ function parseArgs(argv: string[]): CliOptions {
             case '--max-steps':
                 options.maxSteps = Number(argv[++index]);
                 break;
+            case '--shell-approval':
+                options.shellApprovalMode = parseShellApprovalMode(argv[++index]);
+                break;
             case '--yes':
             case '-y':
-                options.autoApprove = true;
+                options.shellApprovalMode = 'allow';
                 break;
             case '--verbose':
             case '-v':
@@ -104,7 +112,7 @@ function normalizeConfig(options: CliOptions): CodekConfig {
         apiKey: options.apiKey ?? process.env.OPENAI_API_KEY,
         baseURL: options.baseURL ?? process.env.OPENAI_BASE_URL,
         maxSteps: options.maxSteps ?? Number(process.env.CODEK_MAX_STEPS || getConfig().maxSteps),
-        autoApprove: options.autoApprove,
+        shellApprovalMode: options.shellApprovalMode ?? parseShellApprovalMode(process.env.CODEK_SHELL_APPROVAL_MODE),
         verbose: options.verbose,
     });
 
@@ -123,6 +131,7 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
     output.write(`codek ${readPackageVersion()} (${config.model})\n`);
     output.write(`cwd: ${config.cwd}\n`);
     output.write(`api: ${config.baseURL}\n`);
+    output.write(`shell approval: ${config.shellApprovalMode}\n`);
     output.write('Type /help for commands.\n\n');
 
     while (true) {

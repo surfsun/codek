@@ -1,16 +1,15 @@
 import OpenAI from 'openai';
+import type {
+    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionMessageParam,
+    ChatCompletionTool,
+} from 'openai/resources/chat/completions';
 import { CodekConfig } from './config.js';
 import { logger } from './logger.js';
 import { createTools, runTool } from './runtime.js';
-import { AgentAction, ChatMessage, ToolDefinition } from './types.js';
+import { ToolDefinition } from './types.js';
 
 function buildSystemPrompt(tools: ToolDefinition[]) {
-    const toolList = tools.map(tool => ({
-        name: tool.name,
-        description: tool.description,
-        input_schema: tool.inputSchema,
-    }));
-
     return `You are codek, a terminal coding agent.
 
 Work like Codex or Claude Code in a local project:
@@ -20,48 +19,45 @@ Work like Codex or Claude Code in a local project:
 - Keep shell commands purposeful. Prefer list_files/read_file before broad shell usage.
 - Never run destructive commands unless the user explicitly requested them.
 - Do not commit unless the user explicitly asks for a commit.
+- Before editing an existing file, read it first and prefer edit_file so unrelated content is preserved.
+- In shell model approval mode, set requireApproval=true for commands that modify files, install dependencies, access the network, publish, commit, or could be destructive.
 - When finished, return a concise final answer in the user's language.
 
-You must respond with exactly one JSON object and no markdown.
-
-Tool action:
-{"type":"tool","name":"tool_name","input":{"key":"value"}}
-
-Final answer:
-{"type":"final","content":"..."}
-
-Available tools:
-${JSON.stringify(toolList, null, 2)}`;
+Use the provided tools when you need project context or local execution.`;
 }
 
-function parseAction(text: string | null): AgentAction | null {
-    if (!text) return null;
+function toOpenAITools(tools: ToolDefinition[]): ChatCompletionTool[] {
+    return tools.map(tool => ({
+        type: 'function',
+        function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.inputSchema,
+        },
+    }));
+}
 
-    const trimmed = text.trim();
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    const candidate = fenced ? fenced[1] : trimmed;
-    const start = candidate.indexOf('{');
-    const end = candidate.lastIndexOf('}');
+function parseToolArguments(call: ChatCompletionMessageFunctionToolCall): Record<string, unknown> {
+    const raw = call.function.arguments.trim();
+    if (!raw) return {};
 
-    if (start < 0 || end < start) return null;
-
-    try {
-        const parsed = JSON.parse(candidate.slice(start, end + 1)) as AgentAction;
-        if (parsed.type === 'final' && typeof parsed.content === 'string') return parsed;
-        if (parsed.type === 'tool' && typeof parsed.name === 'string') return parsed;
-        return null;
-    } catch {
-        return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`Tool arguments for ${call.function.name} must be a JSON object.`);
     }
+
+    return parsed as Record<string, unknown>;
 }
 
 export class CodekAgent {
     private client: OpenAI | null = null;
     private readonly tools: ToolDefinition[];
-    private messages: ChatMessage[];
+    private readonly openAITools: ChatCompletionTool[];
+    private messages: ChatCompletionMessageParam[];
 
     constructor(private readonly config: CodekConfig) {
         this.tools = createTools(config);
+        this.openAITools = toOpenAITools(this.tools);
         this.messages = [{ role: 'system', content: buildSystemPrompt(this.tools) }];
     }
 
@@ -83,39 +79,62 @@ export class CodekAgent {
             const response = await this.client.chat.completions.create({
                 model: this.config.model,
                 messages: this.messages,
+                tools: this.openAITools,
+                tool_choice: 'auto',
                 temperature: 0,
             });
 
-            const text = response.choices[0]?.message?.content ?? '';
+            const message = response.choices[0]?.message;
+            const text = message?.content ?? '';
             logger.info(`model: ${text}`);
 
-            const action = parseAction(text);
-            this.messages.push({ role: 'assistant', content: text });
-
-            if (!action) {
+            if (!message) {
                 this.messages.push({
                     role: 'user',
-                    content: 'Your previous response was not valid JSON. Return exactly one valid JSON object.',
+                    content: 'The previous response was empty. Continue with a final answer or a tool call.',
                 });
                 continue;
             }
 
-            if (action.type === 'final') {
-                return action.content;
+            if (!message.tool_calls?.length) {
+                return text;
             }
 
-            const result = await runTool(this.tools, action.name, action.input ?? {});
-            logger.tool(`${action.name}: ${result.content}`);
-
             this.messages.push({
-                role: 'user',
-                content: JSON.stringify({
-                    type: 'tool_result',
-                    tool: action.name,
-                    ok: result.ok,
-                    content: result.content.slice(0, 30_000),
-                }),
+                role: 'assistant',
+                content: text,
+                tool_calls: message.tool_calls,
             });
+
+            for (const call of message.tool_calls) {
+                let resultContent: string;
+                let toolName: string = call.type;
+
+                try {
+                    if (call.type !== 'function') {
+                        throw new Error(`Unsupported tool call type: ${call.type}`);
+                    }
+
+                    toolName = call.function.name;
+                    const input = parseToolArguments(call);
+                    const result = await runTool(this.tools, call.function.name, input);
+                    resultContent = JSON.stringify({
+                        ok: result.ok,
+                        content: result.content.slice(0, 30_000),
+                    });
+                    logger.tool(`${call.function.name}: ${result.content}`);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    resultContent = JSON.stringify({ ok: false, content: message });
+                    logger.tool(`${toolName}: ${message}`);
+                }
+
+                this.messages.push({
+                    role: 'tool',
+                    tool_call_id: call.id,
+                    content: resultContent,
+                });
+            }
         }
 
         return `Stopped after ${this.config.maxSteps} steps without a final answer.`;

@@ -1,6 +1,6 @@
 # codek
 
-`codek` is a terminal coding agent. It can inspect files, search a project, write files, run shell commands with approval, and keep a short conversation context while working in the current directory.
+`codek` is a terminal coding agent. It can inspect files, search a project, patch or write files, run shell commands with approval, and keep a short conversation context while working in the current directory.
 
 ## Install
 
@@ -36,8 +36,9 @@ Optional environment variables:
 
 ```bash
 export OPENAI_BASE_URL="https://api.openai.com/v1"
-export CODEK_MODEL="gpt-4.1-mini"
+export CODEK_MODEL="google/gemma-4-e4b"
 export CODEK_MAX_STEPS="20"
+export CODEK_SHELL_APPROVAL_MODE="model"
 ```
 
 ## Usage
@@ -52,7 +53,7 @@ One-shot mode:
 
 ```bash
 codek "read this repo and explain how to run it"
-codek --model gpt-4.1-mini "add a README section for publishing"
+codek --model google/gemma-4-e4b "add a README section for publishing"
 ```
 
 Useful flags:
@@ -62,8 +63,21 @@ codek --help
 codek --version
 codek --cwd /path/to/project
 codek --yes "run tests and fix failures"
+codek --shell-approval ask "run tests"
+codek --shell-approval model "inspect and fix lint errors"
+codek --shell-approval allow "run tests and fix failures"
 codek --verbose "inspect the CLI entrypoint"
 ```
+
+Shell approval modes:
+
+```text
+ask     ask before every shell command
+model   let the model decide whether a shell command needs approval; dangerous commands still ask
+allow   always execute shell commands
+```
+
+`--yes` is kept as a shortcut for `--shell-approval allow`.
 
 Interactive commands:
 

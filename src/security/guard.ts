@@ -11,15 +11,20 @@ const dangerousPatterns = [
     /^:\(\)\{.*\|\:.*\&\}/, // fork bomb
 ];
 
+export type ApprovalReason = 'always-ask' | 'model-requested' | 'dangerous-command';
+
 export function isDangerous(cmd: string): boolean {
     return dangerousPatterns.some(p => p.test(cmd.trim()));
 }
 
-export async function confirmExecution(cmd: string, autoApprove = false): Promise<boolean> {
-    if (autoApprove) return true;
-    if (!isDangerous(cmd)) return true;
+export async function confirmExecution(cmd: string, reason: ApprovalReason): Promise<boolean> {
+    const labels: Record<ApprovalReason, string> = {
+        'always-ask': 'Approval required by shell policy.',
+        'model-requested': 'The model requested approval for this command.',
+        'dangerous-command': 'Dangerous command detected.',
+    };
 
-    console.error('\nDangerous command detected:');
+    console.error(`\n${labels[reason]}`);
     console.error(cmd);
     console.error('Allow execution? Type "yes" to continue.');
 
