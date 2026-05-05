@@ -26,7 +26,7 @@ export function parseShellApprovalMode(value: string | undefined): ShellApproval
 }
 
 const defaultConfig: CodekConfig = {
-    model: process.env.CODEK_MODEL || process.env.OPENAI_MODEL || 'google/gemma-4-e4b',
+    model: process.env.CODEK_MODEL || process.env.OPENAI_MODEL || 'deepseek-v4-pro',
     maxSteps: Number(process.env.CODEK_MAX_STEPS || 20),
     cwd: path.resolve(process.cwd()),
     apiKey: process.env.OPENAI_API_KEY || 'codek-local',

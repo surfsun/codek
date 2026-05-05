@@ -206,7 +206,10 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
         try {
             const result = await agent.run(line);
             output.write(`${result}\n\n`);
-        } finally {
+        } catch (error) {
+            console.error(error);
+        }
+        finally {
             rl = createInterface({ input, output });
         }
     }
