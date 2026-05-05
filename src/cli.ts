@@ -5,7 +5,7 @@ import { stdin as input, stdout as output } from 'process';
 import { CodekAgent } from './agent.js';
 import { CodekConfig, getConfig, parseShellApprovalMode, setConfig } from './config.js';
 import { loadDotEnv } from './env.js';
-import { setVerbose } from './logger.js';
+import { getVerbose, setVerbose } from './logger.js';
 
 type CliOptions = Partial<CodekConfig> & {
     help?: boolean;
@@ -38,6 +38,7 @@ Options:
 Interactive commands:
   /help                show this help
   /clear               clear conversation context
+  /log                 show or change verbose logging: /log on, /log off, /log toggle
   /model               show current model
   /exit                quit`;
 
@@ -151,6 +152,36 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
         if (line === '/clear') {
             agent.clear();
             output.write('Context cleared.\n');
+            continue;
+        }
+
+        if (line === '/log' || line.startsWith('/log ')) {
+            const mode = line.slice('/log'.length).trim();
+
+            if (!mode) {
+                output.write(`Log output is ${getVerbose() ? 'on' : 'off'}.\n`);
+                continue;
+            }
+
+            if (mode === 'on') {
+                setVerbose(true);
+                output.write('Log output enabled.\n');
+                continue;
+            }
+
+            if (mode === 'off') {
+                setVerbose(false);
+                output.write('Log output disabled.\n');
+                continue;
+            }
+
+            if (mode === 'toggle') {
+                setVerbose(!getVerbose());
+                output.write(`Log output ${getVerbose() ? 'enabled' : 'disabled'}.\n`);
+                continue;
+            }
+
+            output.write('Usage: /log, /log on, /log off, /log toggle\n');
             continue;
         }
 

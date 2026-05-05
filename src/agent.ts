@@ -7,9 +7,15 @@ import type {
 import { CodekConfig } from './config.js';
 import { logger } from './logger.js';
 import { createTools, runTool } from './runtime.js';
-import { ToolDefinition } from './types.js';
+import { AgentAction, ToolDefinition } from './types.js';
 
 function buildSystemPrompt(tools: ToolDefinition[]) {
+    const fallbackTools = tools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.inputSchema,
+    }));
+
     return `You are codek, a terminal coding agent.
 
 Work like Codex or Claude Code in a local project:
@@ -22,9 +28,19 @@ Work like Codex or Claude Code in a local project:
 - Before editing an existing file, read it first and prefer edit_file so unrelated content is preserved.
 - In shell model approval mode, set requireApproval=true for commands that modify files, install dependencies, access the network, publish, commit, or could be destructive.
 - If a tool result says the user rejected a command, stop the current task and return a brief final answer.
+- Never claim that you changed files, ran commands, or committed code unless you actually used a tool and saw a successful tool result.
 - When finished, return a concise final answer in the user's language.
 
-Use the provided tools when you need project context or local execution.`;
+Use the provided tools when you need project context or local execution.
+
+If your model/runtime cannot emit native tool calls, use this fallback protocol and return exactly one JSON object with no markdown:
+Tool action:
+{"type":"tool","name":"tool_name","input":{"key":"value"}}
+Final answer:
+{"type":"final","content":"..."}
+
+Available fallback tools:
+${JSON.stringify(fallbackTools, null, 2)}`;
 }
 
 function toOpenAITools(tools: ToolDefinition[]): ChatCompletionTool[] {
@@ -50,6 +66,31 @@ function parseToolArguments(call: ChatCompletionMessageFunctionToolCall): Record
     return parsed as Record<string, unknown>;
 }
 
+function parseFallbackAction(text: string | null): AgentAction | null {
+    if (!text) return null;
+
+    const trimmed = text.trim();
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    const candidate = fenced ? fenced[1] : trimmed;
+    const start = candidate.indexOf('{');
+    const end = candidate.lastIndexOf('}');
+
+    if (start < 0 || end < start) return null;
+
+    try {
+        const parsed = JSON.parse(candidate.slice(start, end + 1)) as AgentAction;
+        if (parsed.type === 'final' && typeof parsed.content === 'string') return parsed;
+        if (parsed.type === 'tool' && typeof parsed.name === 'string') return parsed;
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+function requestLikelyNeedsTool(input: string) {
+    return /添加|修改|删除|修复|实现|更新|提交|commit|add|change|modify|delete|fix|implement|update|write/i.test(input);
+}
+
 export class CodekAgent {
     private client: OpenAI | null = null;
     private readonly tools: ToolDefinition[];
@@ -73,6 +114,8 @@ export class CodekAgent {
         });
 
         this.messages.push({ role: 'user', content: input });
+        const needsTool = requestLikelyNeedsTool(input);
+        let successfulTool = false;
 
         for (let step = 1; step <= this.config.maxSteps; step++) {
             logger.step(`agent step ${step}`);
@@ -98,6 +141,49 @@ export class CodekAgent {
             }
 
             if (!message.tool_calls?.length) {
+                const fallbackAction = parseFallbackAction(text);
+
+                if (fallbackAction?.type === 'tool') {
+                    this.messages.push({ role: 'assistant', content: text });
+
+                    const result = await runTool(this.tools, fallbackAction.name, fallbackAction.input ?? {});
+                    successfulTool ||= result.ok;
+                    logger.tool(`${fallbackAction.name}: ${result.content}`);
+
+                    this.messages.push({
+                        role: 'user',
+                        content: JSON.stringify({
+                            type: 'tool_result',
+                            tool: fallbackAction.name,
+                            ok: result.ok,
+                            content: result.content.slice(0, 30_000),
+                        }),
+                    });
+                    continue;
+                }
+
+                if (fallbackAction?.type === 'final') {
+                    if (needsTool && !successfulTool) {
+                        this.messages.push({ role: 'assistant', content: text });
+                        this.messages.push({
+                            role: 'user',
+                            content: 'You returned a final answer for a task that requires inspecting or changing the project, but no local tool has succeeded in this run. Use a native tool call, or return exactly one fallback JSON tool action.',
+                        });
+                        continue;
+                    }
+
+                    return fallbackAction.content;
+                }
+
+                if (needsTool && !successfulTool) {
+                    this.messages.push({ role: 'assistant', content: text });
+                    this.messages.push({
+                        role: 'user',
+                        content: 'This task requires inspecting or changing the local project. Do not explain or claim completion yet. Use a native tool call, or return exactly one fallback JSON tool action.',
+                    });
+                    continue;
+                }
+
                 return text;
             }
 
@@ -119,6 +205,7 @@ export class CodekAgent {
                     toolName = call.function.name;
                     const input = parseToolArguments(call);
                     const result = await runTool(this.tools, call.function.name, input);
+                    successfulTool ||= result.ok;
                     resultContent = JSON.stringify({
                         ok: result.ok,
                         content: result.content.slice(0, 30_000),

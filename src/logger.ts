@@ -4,6 +4,10 @@ export function setVerbose(value: boolean) {
     verbose = value;
 }
 
+export function getVerbose() {
+    return verbose;
+}
+
 function write(stream: NodeJS.WriteStream, label: string, msg: string) {
     stream.write(`[${label}] ${msg}\n`);
 }

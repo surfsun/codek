@@ -94,6 +94,7 @@ Interactive commands:
 ```text
 /help    show commands
 /clear   clear conversation history
+/log     show or change verbose logging: /log on, /log off, /log toggle
 /model   show current model
 /exit    quit
 ```

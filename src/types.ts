@@ -3,6 +3,10 @@ export type ToolResult = {
     content: string;
 };
 
+export type AgentAction =
+    | { type: 'tool'; name: string; input?: Record<string, unknown> }
+    | { type: 'final'; content: string };
+
 export type ToolInputSchema = {
     type: 'object';
     properties: Record<string, unknown>;
