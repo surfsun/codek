@@ -127,6 +127,86 @@ function normalizeConfig(options: CliOptions): CodekConfig {
     return config;
 }
 
+function interactiveLogSelect(current: boolean): Promise<boolean> {
+    return new Promise((resolve) => {
+        const stdin = process.stdin;
+        const stdout = process.stdout;
+
+        if (!stdin.isTTY) {
+            // fallback: no TTY, can't do interactive
+            resolve(current);
+            return;
+        }
+
+        let selected = current; // true = ON, false = OFF
+        let firstRender = true;
+
+        // Hide cursor
+        stdout.write('\x1b[?25l');
+
+        const render = () => {
+            if (firstRender) {
+                firstRender = false;
+            } else {
+                // Clear previous 5 lines of menu
+                stdout.write('\x1b[5A\x1b[J');
+            }
+            stdout.write('--- Log Output ---\n');
+            if (selected) {
+                stdout.write('> ON              \n');
+                stdout.write('  OFF             \n');
+            } else {
+                stdout.write('  ON              \n');
+                stdout.write('> OFF             \n');
+            }
+            stdout.write('------------------\n');
+            stdout.write('Use ↑↓ to change, Enter to confirm\n');
+        };
+
+        const cleanup = () => {
+            stdin.removeListener('data', onData);
+            stdin.setRawMode(false);
+            stdout.write('\x1b[?25h'); // show cursor
+            // Clear the menu (5 lines)
+            stdout.write('\x1b[5A\x1b[J');
+        };
+
+        const onData = (buf: Buffer) => {
+            const key = buf.toString();
+
+            if (key === '\x1b[A') {
+                // Up arrow
+                selected = !selected;
+                render();
+            } else if (key === '\x1b[B') {
+                // Down arrow
+                selected = !selected;
+                render();
+            } else if (key === '\r' || key === '\n') {
+                // Enter
+                cleanup();
+                resolve(selected);
+            } else if (key === '\x03') {
+                // Ctrl+C
+                cleanup();
+                // Insert a newline so terminal doesn't look broken
+                stdout.write('\n');
+                resolve(current); // keep original
+            } else if (key === '\x1b') {
+                // Escape
+                cleanup();
+                resolve(current); // keep original
+            }
+            // Ignore other keys
+        };
+
+        stdin.setRawMode(true);
+        stdin.resume();
+        stdin.on('data', onData);
+        render();
+    });
+}
+
 async function runInteractive(agent: CodekAgent, config: CodekConfig) {
     let rl = createInterface({ input, output });
     output.write(`codek ${readPackageVersion()} (${config.model})\n`);
@@ -157,23 +237,13 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
 
         if (line === '/log') {
             const isLoggingOn = getVerbose();
-            output.write(`\n--- Log Output Status ---\n`);
-            output.write(`Current status: ${isLoggingOn ? 'ON' : 'OFF'}\n`);
-            output.write('1. On (打开日志)\n');
-            output.write('2. Off (关闭日志)\n');
-            output.write('------------------------\n');
-            // In a real TUI, we would use advanced readline features here for arrow key navigation.
-            // For now, we prompt the user to enter 1 or 2.
-            const choice = await rl.question('Select option (1/2): ');
-
-            if (choice === '1') {
-                setVerbose(true);
-                output.write('Log output enabled.\n');
-            } else if (choice === '2') {
-                setVerbose(false);
-                output.write('Log output disabled.\n');
+            output.write('\n');
+            const newValue = await interactiveLogSelect(isLoggingOn);
+            if (newValue !== isLoggingOn) {
+                setVerbose(newValue);
+                output.write(`Log output ${newValue ? 'enabled' : 'disabled'}.\n`);
             } else {
-                output.write('Invalid selection. Log status remains unchanged.\n');
+                output.write('Log status unchanged.\n');
             }
             continue;
         }
