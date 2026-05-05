@@ -1,3 +1,13 @@
+export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
+
+export type Task = {
+    id: string;
+    subject: string;
+    description: string;
+    status: TaskStatus;
+    createdAt: number;
+};
+
 export type ToolResult = {
     ok: boolean;
     content: string;

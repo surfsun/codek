@@ -45,28 +45,3 @@ export async function editFile(cwd: string, requestedPath: string, search: strin
     await fs.writeFile(filePath, next, 'utf-8');
     return `Edited ${path.relative(cwd, filePath)}`;
 }
-
-export async function listFiles(cwd: string, requestedPath = '.', depth = 2) {
-    const root = resolveInsideCwd(cwd, requestedPath);
-    const entries: string[] = [];
-
-    async function walk(current: string, currentDepth: number) {
-        if (currentDepth > depth) return;
-
-        const dirents = await fs.readdir(current, { withFileTypes: true });
-        for (const dirent of dirents) {
-            if (dirent.name === 'node_modules' || dirent.name === '.git' || dirent.name === 'dist') continue;
-
-            const absolute = path.join(current, dirent.name);
-            const relative = path.relative(cwd, absolute);
-            entries.push(dirent.isDirectory() ? `${relative}/` : relative);
-
-            if (dirent.isDirectory()) {
-                await walk(absolute, currentDepth + 1);
-            }
-        }
-    }
-
-    await walk(root, 0);
-    return entries.join('\n') || '(empty)';
-}
