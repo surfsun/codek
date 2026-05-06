@@ -29,6 +29,7 @@ export type AgentEvent =
     | { type: 'step'; step: number; maxSteps: number }
     | { type: 'tool_start'; name: string }
     | { type: 'tool_end'; name: string; ok: boolean }
+    | { type: 'assistant_delta'; content: string }
     | { type: 'model'; content: string }
     | { type: 'error'; message: string };
 

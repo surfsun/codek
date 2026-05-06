@@ -38,7 +38,8 @@ Optional environment variables:
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 export CODEK_MODEL="google/gemma-4-e4b"
 export CODEK_MODELS="deepseek-v4-flash,google/gemma-4-e4b,gpt-4.1,gpt-4.1-mini"
-export CODEK_MAX_STEPS="50"
+export CODEK_MAX_RUN_MS="600000"
+export CODEK_MAX_STEPS="200"
 export CODEK_SHELL_APPROVAL_MODE="model"
 export CODEK_HISTORY="on"
 export CODEK_HISTORY_PATH="$HOME/.codek/projects/my-project/history.jsonl"
@@ -46,11 +47,16 @@ export CODEK_MEMORY="on"
 export CODEK_MEMORY_PATH="$HOME/.codek/projects/my-project/memory.json"
 export CODEK_SUMMARIES="on"
 export CODEK_SUMMARY_PATH="$HOME/.codek/projects/my-project/summaries.jsonl"
+export CODEK_LOGS="on"
+export CODEK_LOG_DIR="$HOME/.codek/projects/my-project/logs"
 ```
 
 Conversation history is archived locally as append-only JSONL. This keeps raw conversations available for later summarization and retrieval without sending every past message into each new prompt.
 Project memories are stored separately and can be managed explicitly from the interactive prompt.
 Conversation summaries are stored as a lightweight index for later retrieval.
+Logs are stored per CLI session. `events.jsonl` records agent/tool events, while `llm.jsonl` records model request parameters and streamed responses for debugging.
+
+By default, npm-installed `codek` stores user-owned data under `$HOME/.codek/projects/<project-hash>/` instead of inside the npm package directory.
 
 ## Usage
 
@@ -73,6 +79,7 @@ Useful flags:
 codek --help
 codek --version
 codek --cwd /path/to/project
+codek --max-run 900 "finish this refactor"
 codek --yes "run tests and fix failures"
 codek --shell-approval ask "run tests"
 codek --shell-approval model "inspect and fix lint errors"
@@ -105,7 +112,7 @@ Interactive commands:
 ```text
 /help    show commands
 /clear   clear conversation history
-/log     show or change verbose logging: /log on, /log off, /log toggle
+/log     show or change terminal debug output: /log on, /log off
 /model   choose model interactively
 /model current
          show current model

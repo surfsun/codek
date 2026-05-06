@@ -9,6 +9,7 @@ export type CodekConfig = {
     model: string;
     modelProfiles: ModelProfile[];
     maxSteps: number;
+    maxRunMs: number;
     cwd: string;
     apiKey: string;
     baseURL: string;
@@ -20,6 +21,8 @@ export type CodekConfig = {
     memoryPath: string;
     summaryEnabled: boolean;
     summaryPath: string;
+    logEnabled: boolean;
+    logDir: string;
 };
 
 export type ShellApprovalMode = 'ask' | 'model' | 'allow';
@@ -76,19 +79,28 @@ export function parseBoolean(value: string | undefined, fallback: boolean): bool
     throw new Error(`Invalid boolean value: ${value}`);
 }
 
+export function projectHash(cwd: string) {
+    return createHash('sha256').update(path.resolve(cwd)).digest('hex').slice(0, 16);
+}
+
+export function defaultProjectDataDir(cwd: string) {
+    return path.join(os.homedir(), '.codek', 'projects', projectHash(cwd));
+}
+
 export function defaultHistoryPath(cwd: string) {
-    const projectHash = createHash('sha256').update(cwd).digest('hex').slice(0, 16);
-    return path.join(os.homedir(), '.codek', 'projects', projectHash, 'history.jsonl');
+    return path.join(defaultProjectDataDir(cwd), 'history.jsonl');
 }
 
 export function defaultMemoryPath(cwd: string) {
-    const projectHash = createHash('sha256').update(cwd).digest('hex').slice(0, 16);
-    return path.join(os.homedir(), '.codek', 'projects', projectHash, 'memory.json');
+    return path.join(defaultProjectDataDir(cwd), 'memory.json');
 }
 
 export function defaultSummaryPath(cwd: string) {
-    const projectHash = createHash('sha256').update(cwd).digest('hex').slice(0, 16);
-    return path.join(os.homedir(), '.codek', 'projects', projectHash, 'summaries.jsonl');
+    return path.join(defaultProjectDataDir(cwd), 'summaries.jsonl');
+}
+
+export function defaultLogDir(cwd: string) {
+    return path.join(defaultProjectDataDir(cwd), 'logs');
 }
 
 export function parseShellApprovalMode(value: string | undefined): ShellApprovalMode | undefined {
@@ -104,7 +116,8 @@ export function parseShellApprovalMode(value: string | undefined): ShellApproval
 const defaultConfig: CodekConfig = {
     model: process.env.CODEK_MODEL || process.env.OPENAI_MODEL || 'deepseek-v4-flash',
     modelProfiles: parseModelProfiles(process.env.CODEK_MODELS) ?? defaultModelProfiles,
-    maxSteps: Number(process.env.CODEK_MAX_STEPS || 50),
+    maxSteps: Number(process.env.CODEK_MAX_STEPS || 200),
+    maxRunMs: Number(process.env.CODEK_MAX_RUN_MS || 10 * 60 * 1000),
     cwd: path.resolve(process.cwd()),
     apiKey: process.env.OPENAI_API_KEY || 'codek-local',
     baseURL: process.env.OPENAI_BASE_URL || 'http://127.0.0.1:1234/v1',
@@ -116,6 +129,8 @@ const defaultConfig: CodekConfig = {
     memoryPath: process.env.CODEK_MEMORY_PATH || defaultMemoryPath(path.resolve(process.cwd())),
     summaryEnabled: parseBoolean(process.env.CODEK_SUMMARIES, true),
     summaryPath: process.env.CODEK_SUMMARY_PATH || defaultSummaryPath(path.resolve(process.cwd())),
+    logEnabled: parseBoolean(process.env.CODEK_LOGS, true),
+    logDir: process.env.CODEK_LOG_DIR || defaultLogDir(path.resolve(process.cwd())),
 };
 
 let config = { ...defaultConfig };

@@ -73,6 +73,15 @@ function requestLikelyNeedsTool(input: string) {
     return /添加|修改|删除|修复|实现|更新|提交|commit|add|change|modify|delete|fix|implement|update|write/i.test(input);
 }
 
+type StreamedMessage = DeepSeekAssistantMessage & {
+    tool_calls?: ChatCompletionMessageFunctionToolCall[];
+};
+
+function shouldBufferVisibleText(buffer: string) {
+    const trimmed = buffer.trimStart();
+    return trimmed.startsWith('{') || trimmed.startsWith('```');
+}
+
 export class CodekAgent {
     private client: OpenAI | null = null;
     private readonly tools: ToolDefinition[];
@@ -186,6 +195,93 @@ export class CodekAgent {
         }
     }
 
+    private async createCompletion(): Promise<StreamedMessage | null> {
+        const request = {
+            model: this.config.model,
+            messages: this.messages,
+            tools: this.openAITools,
+            tool_choice: 'auto' as const,
+            temperature: 0,
+            stream: true as const,
+        };
+        logger.llm('request', request);
+
+        const stream = await this.client!.chat.completions.create(request);
+        let content = '';
+        let reasoningContent = '';
+        let visibleBuffer = '';
+        let visibleStarted = false;
+        const toolCalls = new Map<number, ChatCompletionMessageFunctionToolCall>();
+
+        for await (const chunk of stream) {
+            logger.llm('response_chunk', chunk as unknown as Record<string, unknown>);
+            const delta = chunk.choices[0]?.delta as any;
+            if (!delta) continue;
+
+            if (typeof delta.reasoning_content === 'string') {
+                reasoningContent += delta.reasoning_content;
+            }
+
+            if (typeof delta.content === 'string') {
+                content += delta.content;
+
+                if (visibleStarted) {
+                    this.emit({ type: 'assistant_delta', content: delta.content });
+                } else {
+                    visibleBuffer += delta.content;
+                    if (!shouldBufferVisibleText(visibleBuffer)) {
+                        visibleStarted = true;
+                        this.emit({ type: 'assistant_delta', content: visibleBuffer });
+                        visibleBuffer = '';
+                    }
+                }
+            }
+
+            for (const partialCall of delta.tool_calls ?? []) {
+                const index = partialCall.index ?? 0;
+                const current = toolCalls.get(index) ?? {
+                    id: partialCall.id ?? '',
+                    type: 'function',
+                    function: {
+                        name: '',
+                        arguments: '',
+                    },
+                } as ChatCompletionMessageFunctionToolCall;
+
+                if (partialCall.id) current.id = partialCall.id;
+                if (partialCall.type) current.type = partialCall.type;
+                if (partialCall.function?.name) current.function.name += partialCall.function.name;
+                if (partialCall.function?.arguments) current.function.arguments += partialCall.function.arguments;
+                toolCalls.set(index, current);
+            }
+        }
+
+        const orderedToolCalls = Array.from(toolCalls.entries())
+            .sort(([left], [right]) => left - right)
+            .map(([, call]) => call);
+        const message: StreamedMessage = {
+            role: 'assistant',
+            content,
+            reasoning_content: reasoningContent || undefined,
+        };
+
+        if (orderedToolCalls.length > 0) {
+            message.tool_calls = orderedToolCalls;
+        } else if (!visibleStarted && visibleBuffer) {
+            const fallbackAction = parseFallbackAction(content);
+            if (!fallbackAction) {
+                this.emit({ type: 'assistant_delta', content: visibleBuffer });
+            }
+        }
+
+        logger.llm('response_complete', {
+            content,
+            reasoning_content: reasoningContent || undefined,
+            tool_calls: orderedToolCalls,
+        });
+        return message;
+    }
+
     async run(input: string): Promise<string> {
         this.client ??= new OpenAI({
             apiKey: this.config.apiKey,
@@ -197,22 +293,21 @@ export class CodekAgent {
         await this.archiveMessage({ role: 'user', content: input });
         const needsTool = requestLikelyNeedsTool(input);
         let successfulTool = false;
+        const deadline = Date.now() + this.config.maxRunMs;
 
         for (let step = 1; step <= this.config.maxSteps; step++) {
+            if (Date.now() > deadline) {
+                this.emit({ type: 'status', status: 'error', message: 'Time budget exceeded' });
+                await this.archiveEvent('error', `Stopped after ${this.config.maxRunMs}ms without a final answer.`);
+                return `Stopped after ${Math.round(this.config.maxRunMs / 1000)} seconds without a final answer.`;
+            }
+
             logger.step(`agent step ${step}`);
             this.emit({ type: 'step', step, maxSteps: this.config.maxSteps });
-            this.emit({ type: 'status', status: 'calling_model', message: `Calling ${this.config.model}` });
+            this.emit({ type: 'status', status: 'thinking', message: 'Thinking' });
 
-            const response = await this.client.chat.completions.create({
-                model: this.config.model,
-                messages: this.messages,
-                tools: this.openAITools,
-                tool_choice: 'auto',
-                temperature: 0,
-            });
-
-            const message = response.choices[0]?.message;
-            const text = message?.content ?? '';
+            const message = await this.createCompletion();
+            const text = typeof message?.content === 'string' ? message.content : '';
             const reasoningContent = (message as any)?.reasoning_content ?? undefined;
             logger.info(`model: ${text}`);
             if (text.trim()) {
@@ -353,7 +448,7 @@ export class CodekAgent {
         }
 
         this.emit({ type: 'status', status: 'error', message: `Stopped after ${this.config.maxSteps} steps` });
-        await this.archiveEvent('error', `Stopped after ${this.config.maxSteps} steps without a final answer.`);
-        return `Stopped after ${this.config.maxSteps} steps without a final answer.`;
+        await this.archiveEvent('error', `Stopped after internal safety limit without a final answer.`);
+        return `Stopped after the internal safety limit without a final answer.`;
     }
 }

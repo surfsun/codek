@@ -4,9 +4,9 @@ import * as readline from 'readline';
 import { readFileSync } from 'fs';
 import { stdin as input, stdout as output } from 'process';
 import { CodekAgent } from './agent.js';
-import { CodekConfig, ModelProfile, defaultHistoryPath, defaultMemoryPath, defaultSummaryPath, getConfig, parseBoolean, parseShellApprovalMode, setConfig } from './config.js';
+import { CodekConfig, ModelProfile, defaultHistoryPath, defaultLogDir, defaultMemoryPath, defaultSummaryPath, getConfig, parseBoolean, parseShellApprovalMode, setConfig } from './config.js';
 import { loadDotEnv } from './env.js';
-import { getVerbose, setVerbose } from './logger.js';
+import { configureLogger, getVerbose, logger, setVerbose } from './logger.js';
 import { JsonlConversationArchive, NullConversationArchive } from './storage/archive.js';
 import { JsonMemoryStore, NullMemoryStore } from './storage/memory.js';
 import { JsonlSummaryStore, NullSummaryStore } from './storage/summary.js';
@@ -29,7 +29,8 @@ Options:
   --cwd <path>         working directory, defaults to current directory
   --base-url <url>     OpenAI-compatible API URL, defaults to local service
   --api-key <key>      API key, defaults to OPENAI_API_KEY or codek-local
-  --max-steps <n>      maximum agent tool steps, defaults to 50
+  --max-run <seconds>  maximum wall-clock time per request, defaults to 600
+  --max-steps <n>      internal safety limit for agent turns
   --shell-approval <mode>
                        shell approval mode: ask, model, or allow
                        ask: ask before every command
@@ -43,7 +44,7 @@ Options:
 Interactive commands:
   /help                show this help
   /clear               clear conversation context
-  /log                 show or change verbose logging: /log on, /log off, /log toggle
+  /log                 show or change terminal debug output: /log on, /log off
   /model               choose model interactively
   /model current       show current model
   /model list          list supported models
@@ -93,6 +94,9 @@ function parseArgs(argv: string[]): CliOptions {
             case '--max-steps':
                 options.maxSteps = Number(argv[++index]);
                 break;
+            case '--max-run':
+                options.maxRunMs = Number(argv[++index]) * 1000;
+                break;
             case '--shell-approval':
                 options.shellApprovalMode = parseShellApprovalMode(argv[++index]);
                 break;
@@ -125,11 +129,13 @@ function normalizeConfig(options: CliOptions): CodekConfig {
         apiKey: options.apiKey ?? process.env.OPENAI_API_KEY,
         baseURL: options.baseURL ?? process.env.OPENAI_BASE_URL,
         maxSteps: options.maxSteps ?? Number(process.env.CODEK_MAX_STEPS || getConfig().maxSteps),
+        maxRunMs: options.maxRunMs ?? Number(process.env.CODEK_MAX_RUN_MS || getConfig().maxRunMs),
         shellApprovalMode: options.shellApprovalMode ?? parseShellApprovalMode(process.env.CODEK_SHELL_APPROVAL_MODE),
         verbose: options.verbose,
         historyEnabled: process.env.CODEK_HISTORY === undefined ? undefined : parseBoolean(process.env.CODEK_HISTORY, true),
         memoryEnabled: process.env.CODEK_MEMORY === undefined ? undefined : parseBoolean(process.env.CODEK_MEMORY, true),
         summaryEnabled: process.env.CODEK_SUMMARIES === undefined ? undefined : parseBoolean(process.env.CODEK_SUMMARIES, true),
+        logEnabled: process.env.CODEK_LOGS === undefined ? undefined : parseBoolean(process.env.CODEK_LOGS, true),
     });
 
     const config = getConfig();
@@ -142,13 +148,23 @@ function normalizeConfig(options: CliOptions): CodekConfig {
     if (!process.env.CODEK_SUMMARY_PATH) {
         setConfig({ summaryPath: defaultSummaryPath(config.cwd) });
     }
+    if (!process.env.CODEK_LOG_DIR) {
+        setConfig({ logDir: defaultLogDir(config.cwd) });
+    }
 
     if (!Number.isFinite(config.maxSteps) || config.maxSteps < 1) {
         throw new Error('--max-steps must be a positive number');
     }
+    if (!Number.isFinite(config.maxRunMs) || config.maxRunMs < 1_000) {
+        throw new Error('--max-run must be at least 1 second');
+    }
 
     setVerbose(config.verbose);
     return getConfig();
+}
+
+function createSessionId() {
+    return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
 type SelectOption<T> = {
@@ -272,33 +288,80 @@ function printModelList(config: CodekConfig) {
     }
 }
 
-function renderAgentEvent(event: AgentEvent) {
-    switch (event.type) {
-        case 'status':
-            if (event.status === 'done') {
-                process.stderr.write('[done] ready\n');
+class TerminalStatus {
+    private startedAt = Date.now();
+    private hasStatus = false;
+    private streamed = false;
+
+    reset() {
+        this.startedAt = Date.now();
+        this.streamed = false;
+        this.clear();
+    }
+
+    didStream() {
+        return this.streamed;
+    }
+
+    handle(event: AgentEvent) {
+        logger.event('agent_event', event as unknown as Record<string, unknown>);
+
+        switch (event.type) {
+            case 'status':
+                if (event.status === 'thinking') {
+                    this.render('thinking');
+                    return;
+                }
+                if (event.status === 'archiving') {
+                    this.render('saving history');
+                    return;
+                }
+                if (event.status === 'summarizing') {
+                    this.render('saving summary');
+                    return;
+                }
+                if (event.status === 'done') {
+                    this.clear();
+                    return;
+                }
+                if (event.status === 'error') {
+                    this.clear();
+                    process.stderr.write(`[error] ${event.message ?? 'failed'}\n`);
+                    return;
+                }
                 return;
-            }
-            if (event.status === 'error') {
-                process.stderr.write(`[error] ${event.message ?? 'failed'}\n`);
+            case 'tool_start':
+                this.render(`running ${event.name}`);
                 return;
-            }
-            process.stderr.write(`[${event.status}] ${event.message ?? ''}\n`);
-            return;
-        case 'step':
-            process.stderr.write(`[step] ${event.step}/${event.maxSteps}\n`);
-            return;
-        case 'tool_start':
-            process.stderr.write(`[tool] ${event.name} started\n`);
-            return;
-        case 'tool_end':
-            process.stderr.write(`[tool] ${event.name} ${event.ok ? 'finished' : 'failed'}\n`);
-            return;
-        case 'error':
-            process.stderr.write(`[error] ${event.message}\n`);
-            return;
-        case 'model':
-            return;
+            case 'tool_end':
+                this.render(`${event.name} ${event.ok ? 'done' : 'failed'}`);
+                return;
+            case 'assistant_delta':
+                this.clear();
+                this.streamed = true;
+                output.write(event.content);
+                return;
+            case 'error':
+                this.clear();
+                process.stderr.write(`[error] ${event.message}\n`);
+                return;
+            case 'step':
+            case 'model':
+                return;
+        }
+    }
+
+    private render(label: string) {
+        if (!process.stderr.isTTY) return;
+        const elapsed = Math.max(0, Math.round((Date.now() - this.startedAt) / 1000));
+        process.stderr.write(`\r\x1b[2Kcodek | ${label} | ${elapsed}s`);
+        this.hasStatus = true;
+    }
+
+    clear() {
+        if (!this.hasStatus || !process.stderr.isTTY) return;
+        process.stderr.write('\r\x1b[2K');
+        this.hasStatus = false;
     }
 }
 
@@ -382,6 +445,7 @@ async function runInteractive(
     config: CodekConfig,
     memoryStore: MemoryStore,
     summaryStore: SummaryStore,
+    terminalStatus: TerminalStatus,
 ) {
     let rl = createInterface({ input, output });
     output.write(`codek ${readPackageVersion()} (${config.model})\n`);
@@ -391,6 +455,7 @@ async function runInteractive(
     output.write(`history: ${config.historyEnabled ? config.historyPath : 'disabled'}\n`);
     output.write(`memory: ${config.memoryEnabled ? config.memoryPath : 'disabled'}\n`);
     output.write(`summaries: ${config.summaryEnabled ? config.summaryPath : 'disabled'}\n`);
+    output.write(`logs: ${config.logEnabled ? config.logDir : 'disabled'}\n`);
     output.write('Type /help for commands.\n\n');
 
     while (true) {
@@ -502,9 +567,16 @@ async function runInteractive(
 
         rl.close();
         try {
+            terminalStatus.reset();
             const result = await agent.run(line);
-            output.write(`${result}\n\n`);
+            terminalStatus.clear();
+            if (terminalStatus.didStream()) {
+                output.write('\n\n');
+            } else {
+                output.write(`${result}\n\n`);
+            }
         } catch (error) {
+            terminalStatus.clear();
             console.error(error);
         }
         finally {
@@ -527,6 +599,21 @@ async function main() {
     }
 
     const config = normalizeConfig(options);
+    const sessionId = createSessionId();
+    configureLogger({
+        enabled: config.logEnabled,
+        logDir: config.logDir,
+        sessionId,
+    });
+    logger.event('session_start', {
+        sessionId,
+        cwd: config.cwd,
+        model: config.model,
+        baseURL: config.baseURL,
+        historyPath: config.historyEnabled ? config.historyPath : null,
+        memoryPath: config.memoryEnabled ? config.memoryPath : null,
+        summaryPath: config.summaryEnabled ? config.summaryPath : null,
+    });
     const archive = config.historyEnabled
         ? new JsonlConversationArchive(config.historyPath)
         : new NullConversationArchive();
@@ -536,16 +623,23 @@ async function main() {
     const summaryStore = config.summaryEnabled
         ? new JsonlSummaryStore(config.summaryPath)
         : new NullSummaryStore();
-    const agent = new CodekAgent(config, renderAgentEvent, archive, summaryStore);
+    const terminalStatus = new TerminalStatus();
+    const agent = new CodekAgent(config, event => terminalStatus.handle(event), archive, summaryStore);
     await refreshAgentMemories(agent, memoryStore);
 
     if (options.prompt) {
+        terminalStatus.reset();
         const result = await agent.run(options.prompt);
-        output.write(`${result}\n`);
+        terminalStatus.clear();
+        if (terminalStatus.didStream()) {
+            output.write('\n');
+        } else {
+            output.write(`${result}\n`);
+        }
         return;
     }
 
-    await runInteractive(agent, config, memoryStore, summaryStore);
+    await runInteractive(agent, config, memoryStore, summaryStore, terminalStatus);
 }
 
 main().catch(error => {
