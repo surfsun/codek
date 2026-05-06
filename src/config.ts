@@ -16,6 +16,10 @@ export type CodekConfig = {
     verbose: boolean;
     historyEnabled: boolean;
     historyPath: string;
+    memoryEnabled: boolean;
+    memoryPath: string;
+    summaryEnabled: boolean;
+    summaryPath: string;
 };
 
 export type ShellApprovalMode = 'ask' | 'model' | 'allow';
@@ -77,6 +81,16 @@ export function defaultHistoryPath(cwd: string) {
     return path.join(os.homedir(), '.codek', 'projects', projectHash, 'history.jsonl');
 }
 
+export function defaultMemoryPath(cwd: string) {
+    const projectHash = createHash('sha256').update(cwd).digest('hex').slice(0, 16);
+    return path.join(os.homedir(), '.codek', 'projects', projectHash, 'memory.json');
+}
+
+export function defaultSummaryPath(cwd: string) {
+    const projectHash = createHash('sha256').update(cwd).digest('hex').slice(0, 16);
+    return path.join(os.homedir(), '.codek', 'projects', projectHash, 'summaries.jsonl');
+}
+
 export function parseShellApprovalMode(value: string | undefined): ShellApprovalMode | undefined {
     if (!value) return undefined;
 
@@ -98,6 +112,10 @@ const defaultConfig: CodekConfig = {
     verbose: false,
     historyEnabled: parseBoolean(process.env.CODEK_HISTORY, true),
     historyPath: process.env.CODEK_HISTORY_PATH || defaultHistoryPath(path.resolve(process.cwd())),
+    memoryEnabled: parseBoolean(process.env.CODEK_MEMORY, true),
+    memoryPath: process.env.CODEK_MEMORY_PATH || defaultMemoryPath(path.resolve(process.cwd())),
+    summaryEnabled: parseBoolean(process.env.CODEK_SUMMARIES, true),
+    summaryPath: process.env.CODEK_SUMMARY_PATH || defaultSummaryPath(path.resolve(process.cwd())),
 };
 
 let config = { ...defaultConfig };

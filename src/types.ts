@@ -17,6 +17,7 @@ export type AgentStatus =
     | 'idle'
     | 'building_context'
     | 'archiving'
+    | 'summarizing'
     | 'thinking'
     | 'calling_model'
     | 'running_tool'
@@ -55,6 +56,36 @@ export type ConversationArchive = {
         content?: string;
         metadata?: Record<string, unknown>;
     }): Promise<void>;
+};
+
+export type MemoryScope = 'project' | 'global';
+
+export type MemoryRecord = {
+    id: string;
+    scope: MemoryScope;
+    content: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type MemoryStore = {
+    list(): Promise<MemoryRecord[]>;
+    add(content: string, scope?: MemoryScope): Promise<MemoryRecord>;
+    remove(id: string): Promise<boolean>;
+};
+
+export type SummaryRecord = {
+    id: string;
+    conversationId: string;
+    createdAt: string;
+    model: string;
+    userRequest: string;
+    finalAnswer: string;
+};
+
+export type SummaryStore = {
+    list(limit?: number): Promise<SummaryRecord[]>;
+    add(summary: Omit<SummaryRecord, 'id' | 'createdAt'>): Promise<SummaryRecord>;
 };
 
 export type ToolInputSchema = {

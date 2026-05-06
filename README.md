@@ -42,9 +42,15 @@ export CODEK_MAX_STEPS="50"
 export CODEK_SHELL_APPROVAL_MODE="model"
 export CODEK_HISTORY="on"
 export CODEK_HISTORY_PATH="$HOME/.codek/projects/my-project/history.jsonl"
+export CODEK_MEMORY="on"
+export CODEK_MEMORY_PATH="$HOME/.codek/projects/my-project/memory.json"
+export CODEK_SUMMARIES="on"
+export CODEK_SUMMARY_PATH="$HOME/.codek/projects/my-project/summaries.jsonl"
 ```
 
 Conversation history is archived locally as append-only JSONL. This keeps raw conversations available for later summarization and retrieval without sending every past message into each new prompt.
+Project memories are stored separately and can be managed explicitly from the interactive prompt.
+Conversation summaries are stored as a lightweight index for later retrieval.
 
 ## Usage
 
@@ -107,6 +113,14 @@ Interactive commands:
          list supported models
 /model <name>
          switch to a model by name
+/memory
+         list durable memories
+/memory add <text>
+         add a project memory
+/memory forget <id>
+         remove a memory
+/summary
+         list recent conversation summaries
 /exit    quit
 ```
 

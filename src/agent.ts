@@ -23,7 +23,7 @@ import { CodekConfig } from './config.js';
 import { logger } from './logger.js';
 import { buildInitialMessages } from './prompts/context.js';
 import { createTools, runTool } from './runtime.js';
-import { AgentAction, AgentEvent, ConversationArchive, ToolDefinition } from './types.js';
+import { AgentAction, AgentEvent, ConversationArchive, MemoryRecord, SummaryStore, ToolDefinition } from './types.js';
 
 function toOpenAITools(tools: ToolDefinition[]): ChatCompletionTool[] {
     return tools.map(tool => ({
@@ -79,15 +79,17 @@ export class CodekAgent {
     private readonly openAITools: ChatCompletionTool[];
     private messages: CodekMessage[];
     private conversationId: string | null = null;
+    private memories: MemoryRecord[] = [];
 
     constructor(
         private readonly config: CodekConfig,
         private readonly onEvent?: (event: AgentEvent) => void,
         private readonly archive?: ConversationArchive,
+        private readonly summaries?: SummaryStore,
     ) {
         this.tools = createTools(config);
         this.openAITools = toOpenAITools(this.tools);
-        this.messages = buildInitialMessages(this.tools);
+        this.messages = buildInitialMessages(this.tools, this.memories);
     }
 
     private emit(event: AgentEvent) {
@@ -103,8 +105,16 @@ export class CodekAgent {
     }
 
     clear() {
-        this.messages = buildInitialMessages(this.tools);
+        this.messages = buildInitialMessages(this.tools, this.memories);
         void this.archiveEvent('context_clear');
+    }
+
+    setMemories(memories: MemoryRecord[]) {
+        this.memories = memories;
+        this.messages = [
+            ...buildInitialMessages(this.tools, this.memories),
+            ...this.messages.filter(message => message.role !== 'system'),
+        ];
     }
 
     private async ensureConversation() {
@@ -149,6 +159,30 @@ export class CodekAgent {
             const archiveError = error instanceof Error ? error.message : String(error);
             logger.warn(`archive event failed: ${archiveError}`);
             this.emit({ type: 'error', message: `archive event failed: ${archiveError}` });
+        }
+    }
+
+    private async completeRun(userRequest: string, finalAnswer: string) {
+        this.emit({ type: 'status', status: 'done' });
+        await this.archiveEvent('final', finalAnswer);
+
+        if (!this.summaries) return;
+
+        const conversationId = await this.ensureConversation();
+        if (!conversationId) return;
+
+        this.emit({ type: 'status', status: 'summarizing', message: 'Saving conversation summary' });
+        try {
+            await this.summaries.add({
+                conversationId,
+                model: this.config.model,
+                userRequest,
+                finalAnswer,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(`summary save failed: ${message}`);
+            this.emit({ type: 'error', message: `summary save failed: ${message}` });
         }
     }
 
@@ -240,8 +274,7 @@ export class CodekAgent {
                         continue;
                     }
 
-                    this.emit({ type: 'status', status: 'done' });
-                    await this.archiveEvent('final', fallbackAction.content);
+                    await this.completeRun(input, fallbackAction.content);
                     return fallbackAction.content;
                 }
 
@@ -254,8 +287,7 @@ export class CodekAgent {
                     continue;
                 }
 
-                this.emit({ type: 'status', status: 'done' });
-                await this.archiveEvent('final', text);
+                await this.completeRun(input, text);
                 return text;
             }
 

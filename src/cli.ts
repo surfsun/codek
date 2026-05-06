@@ -4,11 +4,13 @@ import * as readline from 'readline';
 import { readFileSync } from 'fs';
 import { stdin as input, stdout as output } from 'process';
 import { CodekAgent } from './agent.js';
-import { CodekConfig, ModelProfile, defaultHistoryPath, getConfig, parseBoolean, parseShellApprovalMode, setConfig } from './config.js';
+import { CodekConfig, ModelProfile, defaultHistoryPath, defaultMemoryPath, defaultSummaryPath, getConfig, parseBoolean, parseShellApprovalMode, setConfig } from './config.js';
 import { loadDotEnv } from './env.js';
 import { getVerbose, setVerbose } from './logger.js';
 import { JsonlConversationArchive, NullConversationArchive } from './storage/archive.js';
-import { AgentEvent } from './types.js';
+import { JsonMemoryStore, NullMemoryStore } from './storage/memory.js';
+import { JsonlSummaryStore, NullSummaryStore } from './storage/summary.js';
+import { AgentEvent, MemoryStore, SummaryStore } from './types.js';
 
 type CliOptions = Partial<CodekConfig> & {
     help?: boolean;
@@ -46,6 +48,10 @@ Interactive commands:
   /model current       show current model
   /model list          list supported models
   /model <name>        switch to a model by name
+  /memory              list durable memories
+  /memory add <text>   add a project memory
+  /memory forget <id>  remove a memory
+  /summary             list recent conversation summaries
   /exit                quit`;
 
 function readPackageVersion() {
@@ -122,11 +128,19 @@ function normalizeConfig(options: CliOptions): CodekConfig {
         shellApprovalMode: options.shellApprovalMode ?? parseShellApprovalMode(process.env.CODEK_SHELL_APPROVAL_MODE),
         verbose: options.verbose,
         historyEnabled: process.env.CODEK_HISTORY === undefined ? undefined : parseBoolean(process.env.CODEK_HISTORY, true),
+        memoryEnabled: process.env.CODEK_MEMORY === undefined ? undefined : parseBoolean(process.env.CODEK_MEMORY, true),
+        summaryEnabled: process.env.CODEK_SUMMARIES === undefined ? undefined : parseBoolean(process.env.CODEK_SUMMARIES, true),
     });
 
     const config = getConfig();
     if (!process.env.CODEK_HISTORY_PATH) {
         setConfig({ historyPath: defaultHistoryPath(config.cwd) });
+    }
+    if (!process.env.CODEK_MEMORY_PATH) {
+        setConfig({ memoryPath: defaultMemoryPath(config.cwd) });
+    }
+    if (!process.env.CODEK_SUMMARY_PATH) {
+        setConfig({ summaryPath: defaultSummaryPath(config.cwd) });
     }
 
     if (!Number.isFinite(config.maxSteps) || config.maxSteps < 1) {
@@ -288,17 +302,108 @@ function renderAgentEvent(event: AgentEvent) {
     }
 }
 
-async function runInteractive(agent: CodekAgent, config: CodekConfig) {
+async function refreshAgentMemories(agent: CodekAgent, memoryStore: MemoryStore) {
+    agent.setMemories(await memoryStore.list());
+}
+
+function printMemories(memories: Awaited<ReturnType<MemoryStore['list']>>) {
+    if (memories.length === 0) {
+        output.write('(no memories)\n');
+        return;
+    }
+
+    for (const memory of memories) {
+        output.write(`${memory.id} [${memory.scope}] ${memory.content}\n`);
+    }
+}
+
+async function handleMemoryCommand(line: string, agent: CodekAgent, config: CodekConfig, memoryStore: MemoryStore) {
+    if (!config.memoryEnabled) {
+        output.write('Memory is disabled. Set CODEK_MEMORY=on to enable it.\n');
+        return;
+    }
+
+    if (line === '/memory' || line === '/memory list') {
+        printMemories(await memoryStore.list());
+        return;
+    }
+
+    if (line.startsWith('/memory add ')) {
+        const content = line.slice('/memory add'.length).trim();
+        if (!content) {
+            output.write('Usage: /memory add <text>\n');
+            return;
+        }
+
+        const memory = await memoryStore.add(content, 'project');
+        await refreshAgentMemories(agent, memoryStore);
+        output.write(`Added memory ${memory.id}.\n`);
+        return;
+    }
+
+    if (line.startsWith('/memory forget ')) {
+        const id = line.slice('/memory forget'.length).trim();
+        if (!id) {
+            output.write('Usage: /memory forget <id>\n');
+            return;
+        }
+
+        const removed = await memoryStore.remove(id);
+        await refreshAgentMemories(agent, memoryStore);
+        output.write(removed ? `Forgot memory ${id}.\n` : `Memory not found: ${id}\n`);
+        return;
+    }
+
+    output.write('Usage: /memory, /memory list, /memory add <text>, or /memory forget <id>\n');
+}
+
+async function handleSummaryCommand(config: CodekConfig, summaryStore: SummaryStore) {
+    if (!config.summaryEnabled) {
+        output.write('Summaries are disabled. Set CODEK_SUMMARIES=on to enable them.\n');
+        return;
+    }
+
+    const summaries = await summaryStore.list(10);
+    if (summaries.length === 0) {
+        output.write('(no summaries)\n');
+        return;
+    }
+
+    for (const summary of summaries) {
+        output.write(`${summary.id} ${summary.createdAt} ${summary.model}\n`);
+        output.write(`  user: ${summary.userRequest}\n`);
+        output.write(`  final: ${summary.finalAnswer}\n`);
+        output.write(`  conversation: ${summary.conversationId}\n`);
+    }
+}
+
+async function runInteractive(
+    agent: CodekAgent,
+    config: CodekConfig,
+    memoryStore: MemoryStore,
+    summaryStore: SummaryStore,
+) {
     let rl = createInterface({ input, output });
     output.write(`codek ${readPackageVersion()} (${config.model})\n`);
     output.write(`cwd: ${config.cwd}\n`);
     output.write(`api: ${config.baseURL}\n`);
     output.write(`shell approval: ${config.shellApprovalMode}\n`);
     output.write(`history: ${config.historyEnabled ? config.historyPath : 'disabled'}\n`);
+    output.write(`memory: ${config.memoryEnabled ? config.memoryPath : 'disabled'}\n`);
+    output.write(`summaries: ${config.summaryEnabled ? config.summaryPath : 'disabled'}\n`);
     output.write('Type /help for commands.\n\n');
 
     while (true) {
-        const line = (await rl.question('codek> ')).trim();
+        let line: string;
+        try {
+            line = (await rl.question('codek> ')).trim();
+        } catch (error) {
+            const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+            if (code === 'ERR_USE_AFTER_CLOSE') {
+                return;
+            }
+            throw error;
+        }
         if (!line) continue;
 
         if (line === '/exit' || line === 'exit' || line === 'quit') {
@@ -314,6 +419,16 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
         if (line === '/clear') {
             agent.clear();
             output.write('Context cleared.\n');
+            continue;
+        }
+
+        if (line === '/memory' || line.startsWith('/memory ')) {
+            await handleMemoryCommand(line, agent, config, memoryStore);
+            continue;
+        }
+
+        if (line === '/summary' || line === '/summary list' || line === '/summaries') {
+            await handleSummaryCommand(config, summaryStore);
             continue;
         }
 
@@ -415,7 +530,14 @@ async function main() {
     const archive = config.historyEnabled
         ? new JsonlConversationArchive(config.historyPath)
         : new NullConversationArchive();
-    const agent = new CodekAgent(config, renderAgentEvent, archive);
+    const memoryStore = config.memoryEnabled
+        ? new JsonMemoryStore(config.memoryPath)
+        : new NullMemoryStore();
+    const summaryStore = config.summaryEnabled
+        ? new JsonlSummaryStore(config.summaryPath)
+        : new NullSummaryStore();
+    const agent = new CodekAgent(config, renderAgentEvent, archive, summaryStore);
+    await refreshAgentMemories(agent, memoryStore);
 
     if (options.prompt) {
         const result = await agent.run(options.prompt);
@@ -423,7 +545,7 @@ async function main() {
         return;
     }
 
-    await runInteractive(agent, config);
+    await runInteractive(agent, config, memoryStore, summaryStore);
 }
 
 main().catch(error => {
