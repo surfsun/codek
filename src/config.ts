@@ -1,4 +1,6 @@
 import path from 'path';
+import os from 'os';
+import { createHash } from 'crypto';
 import { loadDotEnv } from './env.js';
 
 loadDotEnv();
@@ -12,6 +14,8 @@ export type CodekConfig = {
     baseURL: string;
     shellApprovalMode: ShellApprovalMode;
     verbose: boolean;
+    historyEnabled: boolean;
+    historyPath: string;
 };
 
 export type ShellApprovalMode = 'ask' | 'model' | 'allow';
@@ -58,6 +62,21 @@ function parseModelProfiles(value: string | undefined): ModelProfile[] | undefin
     return ids.map(id => ({ id, label: id }));
 }
 
+export function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+    if (!value) return fallback;
+
+    const normalized = value.toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+    if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
+
+    throw new Error(`Invalid boolean value: ${value}`);
+}
+
+export function defaultHistoryPath(cwd: string) {
+    const projectHash = createHash('sha256').update(cwd).digest('hex').slice(0, 16);
+    return path.join(os.homedir(), '.codek', 'projects', projectHash, 'history.jsonl');
+}
+
 export function parseShellApprovalMode(value: string | undefined): ShellApprovalMode | undefined {
     if (!value) return undefined;
 
@@ -77,6 +96,8 @@ const defaultConfig: CodekConfig = {
     baseURL: process.env.OPENAI_BASE_URL || 'http://127.0.0.1:1234/v1',
     shellApprovalMode: 'ask',
     verbose: false,
+    historyEnabled: parseBoolean(process.env.CODEK_HISTORY, true),
+    historyPath: process.env.CODEK_HISTORY_PATH || defaultHistoryPath(path.resolve(process.cwd())),
 };
 
 let config = { ...defaultConfig };

@@ -4,9 +4,10 @@ import * as readline from 'readline';
 import { readFileSync } from 'fs';
 import { stdin as input, stdout as output } from 'process';
 import { CodekAgent } from './agent.js';
-import { CodekConfig, ModelProfile, getConfig, parseShellApprovalMode, setConfig } from './config.js';
+import { CodekConfig, ModelProfile, defaultHistoryPath, getConfig, parseBoolean, parseShellApprovalMode, setConfig } from './config.js';
 import { loadDotEnv } from './env.js';
 import { getVerbose, setVerbose } from './logger.js';
+import { JsonlConversationArchive, NullConversationArchive } from './storage/archive.js';
 import { AgentEvent } from './types.js';
 
 type CliOptions = Partial<CodekConfig> & {
@@ -22,11 +23,11 @@ Usage:
   codek --cwd /path/to/project "inspect this repo"
 
 Options:
-  --model <name>       model name, defaults to CODEK_MODEL or google/gemma-4-e4b
+  --model <name>       model name, defaults to CODEK_MODEL or deepseek-v4-flash
   --cwd <path>         working directory, defaults to current directory
   --base-url <url>     OpenAI-compatible API URL, defaults to local service
   --api-key <key>      API key, defaults to OPENAI_API_KEY or codek-local
-  --max-steps <n>      maximum agent tool steps, defaults to 20
+  --max-steps <n>      maximum agent tool steps, defaults to 50
   --shell-approval <mode>
                        shell approval mode: ask, model, or allow
                        ask: ask before every command
@@ -120,16 +121,20 @@ function normalizeConfig(options: CliOptions): CodekConfig {
         maxSteps: options.maxSteps ?? Number(process.env.CODEK_MAX_STEPS || getConfig().maxSteps),
         shellApprovalMode: options.shellApprovalMode ?? parseShellApprovalMode(process.env.CODEK_SHELL_APPROVAL_MODE),
         verbose: options.verbose,
+        historyEnabled: process.env.CODEK_HISTORY === undefined ? undefined : parseBoolean(process.env.CODEK_HISTORY, true),
     });
 
     const config = getConfig();
+    if (!process.env.CODEK_HISTORY_PATH) {
+        setConfig({ historyPath: defaultHistoryPath(config.cwd) });
+    }
 
     if (!Number.isFinite(config.maxSteps) || config.maxSteps < 1) {
         throw new Error('--max-steps must be a positive number');
     }
 
     setVerbose(config.verbose);
-    return config;
+    return getConfig();
 }
 
 type SelectOption<T> = {
@@ -289,6 +294,7 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
     output.write(`cwd: ${config.cwd}\n`);
     output.write(`api: ${config.baseURL}\n`);
     output.write(`shell approval: ${config.shellApprovalMode}\n`);
+    output.write(`history: ${config.historyEnabled ? config.historyPath : 'disabled'}\n`);
     output.write('Type /help for commands.\n\n');
 
     while (true) {
@@ -406,7 +412,10 @@ async function main() {
     }
 
     const config = normalizeConfig(options);
-    const agent = new CodekAgent(config, renderAgentEvent);
+    const archive = config.historyEnabled
+        ? new JsonlConversationArchive(config.historyPath)
+        : new NullConversationArchive();
+    const agent = new CodekAgent(config, renderAgentEvent, archive);
 
     if (options.prompt) {
         const result = await agent.run(options.prompt);

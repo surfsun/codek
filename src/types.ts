@@ -16,6 +16,7 @@ export type ToolResult = {
 export type AgentStatus =
     | 'idle'
     | 'building_context'
+    | 'archiving'
     | 'thinking'
     | 'calling_model'
     | 'running_tool'
@@ -33,6 +34,28 @@ export type AgentEvent =
 export type AgentAction =
     | { type: 'tool'; name: string; input?: Record<string, unknown> }
     | { type: 'final'; content: string };
+
+export type ArchiveMessageRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export type ConversationArchive = {
+    startConversation(meta: {
+        cwd: string;
+        model: string;
+        baseURL: string;
+    }): Promise<string>;
+    appendMessage(conversationId: string, message: {
+        role: ArchiveMessageRole;
+        content: string;
+        name?: string;
+        ok?: boolean;
+        metadata?: Record<string, unknown>;
+    }): Promise<void>;
+    appendEvent(conversationId: string, event: {
+        type: string;
+        content?: string;
+        metadata?: Record<string, unknown>;
+    }): Promise<void>;
+};
 
 export type ToolInputSchema = {
     type: 'object';

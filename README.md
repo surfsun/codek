@@ -40,7 +40,11 @@ export CODEK_MODEL="google/gemma-4-e4b"
 export CODEK_MODELS="deepseek-v4-flash,google/gemma-4-e4b,gpt-4.1,gpt-4.1-mini"
 export CODEK_MAX_STEPS="50"
 export CODEK_SHELL_APPROVAL_MODE="model"
+export CODEK_HISTORY="on"
+export CODEK_HISTORY_PATH="$HOME/.codek/projects/my-project/history.jsonl"
 ```
+
+Conversation history is archived locally as append-only JSONL. This keeps raw conversations available for later summarization and retrieval without sending every past message into each new prompt.
 
 ## Usage
 

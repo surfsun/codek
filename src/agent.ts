@@ -21,42 +21,9 @@ type CodekMessage =
     | DeepSeekAssistantMessage;
 import { CodekConfig } from './config.js';
 import { logger } from './logger.js';
+import { buildInitialMessages } from './prompts/context.js';
 import { createTools, runTool } from './runtime.js';
-import { AgentAction, AgentEvent, ToolDefinition } from './types.js';
-
-function buildSystemPrompt(tools: ToolDefinition[]) {
-    const fallbackTools = tools.map(tool => ({
-        name: tool.name,
-        description: tool.description,
-        input_schema: tool.inputSchema,
-    }));
-
-    return `You are codek, a terminal coding agent.
-
-Work like Codex or Claude Code in a local project:
-- Inspect the repository before changing code.
-- Prefer small, focused edits that solve the user request.
-- Use tools one step at a time and wait for each result.
-- Keep bash commands purposeful. Prefer glob/read before broad bash usage.
-- Never run destructive commands unless the user explicitly requested them.
-- Do not commit unless the user explicitly asks for a commit (use bash for git operations).
-- Before editing an existing file, read it first and prefer edit so unrelated content is preserved.
-- In model approval mode, set requireApproval=true on bash calls that modify files, install dependencies, access the network, publish, or could be destructive.
-- If a tool result says the user rejected a command, stop the current task and return a brief final answer.
-- Never claim that you changed files, ran commands, or committed code unless you actually used a tool and saw a successful tool result.
-- When finished, return a concise final answer in the user's language.
-
-Use the provided tools when you need project context or local execution.
-
-If your model/runtime cannot emit native tool calls, use this fallback protocol and return exactly one JSON object with no markdown:
-Tool action:
-{"type":"tool","name":"tool_name","input":{"key":"value"}}
-Final answer:
-{"type":"final","content":"..."}
-
-Available fallback tools:
-${JSON.stringify(fallbackTools, null, 2)}`;
-}
+import { AgentAction, AgentEvent, ConversationArchive, ToolDefinition } from './types.js';
 
 function toOpenAITools(tools: ToolDefinition[]): ChatCompletionTool[] {
     return tools.map(tool => ({
@@ -111,14 +78,16 @@ export class CodekAgent {
     private readonly tools: ToolDefinition[];
     private readonly openAITools: ChatCompletionTool[];
     private messages: CodekMessage[];
+    private conversationId: string | null = null;
 
     constructor(
         private readonly config: CodekConfig,
         private readonly onEvent?: (event: AgentEvent) => void,
+        private readonly archive?: ConversationArchive,
     ) {
         this.tools = createTools(config);
         this.openAITools = toOpenAITools(this.tools);
-        this.messages = [{ role: 'system', content: buildSystemPrompt(this.tools) }];
+        this.messages = buildInitialMessages(this.tools);
     }
 
     private emit(event: AgentEvent) {
@@ -134,7 +103,53 @@ export class CodekAgent {
     }
 
     clear() {
-        this.messages = [{ role: 'system', content: buildSystemPrompt(this.tools) }];
+        this.messages = buildInitialMessages(this.tools);
+        void this.archiveEvent('context_clear');
+    }
+
+    private async ensureConversation() {
+        if (this.conversationId || !this.archive) return this.conversationId;
+
+        this.emit({ type: 'status', status: 'archiving', message: 'Opening conversation archive' });
+        try {
+            this.conversationId = await this.archive.startConversation({
+                cwd: this.config.cwd,
+                model: this.config.model,
+                baseURL: this.config.baseURL,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(`archive start failed: ${message}`);
+            this.emit({ type: 'error', message: `archive start failed: ${message}` });
+        }
+
+        return this.conversationId;
+    }
+
+    private async archiveMessage(message: Parameters<ConversationArchive['appendMessage']>[1]) {
+        const conversationId = await this.ensureConversation();
+        if (!conversationId || !this.archive) return;
+
+        try {
+            await this.archive.appendMessage(conversationId, message);
+        } catch (error) {
+            const archiveError = error instanceof Error ? error.message : String(error);
+            logger.warn(`archive message failed: ${archiveError}`);
+            this.emit({ type: 'error', message: `archive message failed: ${archiveError}` });
+        }
+    }
+
+    private async archiveEvent(type: string, content?: string, metadata?: Record<string, unknown>) {
+        const conversationId = await this.ensureConversation();
+        if (!conversationId || !this.archive) return;
+
+        try {
+            await this.archive.appendEvent(conversationId, { type, content, metadata });
+        } catch (error) {
+            const archiveError = error instanceof Error ? error.message : String(error);
+            logger.warn(`archive event failed: ${archiveError}`);
+            this.emit({ type: 'error', message: `archive event failed: ${archiveError}` });
+        }
     }
 
     async run(input: string): Promise<string> {
@@ -145,6 +160,7 @@ export class CodekAgent {
 
         this.emit({ type: 'status', status: 'building_context', message: 'Adding user request to context' });
         this.messages.push({ role: 'user', content: input });
+        await this.archiveMessage({ role: 'user', content: input });
         const needsTool = requestLikelyNeedsTool(input);
         let successfulTool = false;
 
@@ -182,6 +198,11 @@ export class CodekAgent {
 
                 if (fallbackAction?.type === 'tool') {
                     this.messages.push({ role: 'assistant', content: text, reasoning_content: reasoningContent });
+                    await this.archiveMessage({
+                        role: 'assistant',
+                        content: text,
+                        metadata: { fallbackAction: true },
+                    });
 
                     this.emit({ type: 'tool_start', name: fallbackAction.name });
                     this.emit({ type: 'status', status: 'running_tool', message: fallbackAction.name });
@@ -189,6 +210,13 @@ export class CodekAgent {
                     successfulTool ||= result.ok;
                     this.emit({ type: 'tool_end', name: fallbackAction.name, ok: result.ok });
                     logger.tool(`${fallbackAction.name}: ${result.content}`);
+                    await this.archiveMessage({
+                        role: 'tool',
+                        name: fallbackAction.name,
+                        ok: result.ok,
+                        content: result.content,
+                        metadata: { fallbackAction: true },
+                    });
 
                     this.messages.push({
                         role: 'user',
@@ -213,6 +241,7 @@ export class CodekAgent {
                     }
 
                     this.emit({ type: 'status', status: 'done' });
+                    await this.archiveEvent('final', fallbackAction.content);
                     return fallbackAction.content;
                 }
 
@@ -226,6 +255,7 @@ export class CodekAgent {
                 }
 
                 this.emit({ type: 'status', status: 'done' });
+                await this.archiveEvent('final', text);
                 return text;
             }
 
@@ -234,6 +264,11 @@ export class CodekAgent {
                 content: text,
                 reasoning_content: reasoningContent,
                 tool_calls: message.tool_calls,
+            });
+            await this.archiveMessage({
+                role: 'assistant',
+                content: text,
+                metadata: { toolCalls: message.tool_calls },
             });
 
             for (const call of message.tool_calls) {
@@ -256,12 +291,24 @@ export class CodekAgent {
                         ok: result.ok,
                         content: result.content.slice(0, 30_000),
                     });
+                    await this.archiveMessage({
+                        role: 'tool',
+                        name: call.function.name,
+                        ok: result.ok,
+                        content: result.content,
+                    });
                     logger.tool(`${call.function.name}: ${result.content}`);
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
                     resultContent = JSON.stringify({ ok: false, content: message });
                     this.emit({ type: 'tool_end', name: toolName, ok: false });
                     this.emit({ type: 'error', message });
+                    await this.archiveMessage({
+                        role: 'tool',
+                        name: toolName,
+                        ok: false,
+                        content: message,
+                    });
                     logger.tool(`${toolName}: ${message}`);
                 }
 
@@ -274,6 +321,7 @@ export class CodekAgent {
         }
 
         this.emit({ type: 'status', status: 'error', message: `Stopped after ${this.config.maxSteps} steps` });
+        await this.archiveEvent('error', `Stopped after ${this.config.maxSteps} steps without a final answer.`);
         return `Stopped after ${this.config.maxSteps} steps without a final answer.`;
     }
 }
