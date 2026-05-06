@@ -13,6 +13,23 @@ export type ToolResult = {
     content: string;
 };
 
+export type AgentStatus =
+    | 'idle'
+    | 'building_context'
+    | 'thinking'
+    | 'calling_model'
+    | 'running_tool'
+    | 'done'
+    | 'error';
+
+export type AgentEvent =
+    | { type: 'status'; status: AgentStatus; message?: string }
+    | { type: 'step'; step: number; maxSteps: number }
+    | { type: 'tool_start'; name: string }
+    | { type: 'tool_end'; name: string; ok: boolean }
+    | { type: 'model'; content: string }
+    | { type: 'error'; message: string };
+
 export type AgentAction =
     | { type: 'tool'; name: string; input?: Record<string, unknown> }
     | { type: 'final'; content: string };

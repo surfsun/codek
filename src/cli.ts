@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { createInterface } from 'readline/promises';
+import * as readline from 'readline';
 import { readFileSync } from 'fs';
 import { stdin as input, stdout as output } from 'process';
 import { CodekAgent } from './agent.js';
-import { CodekConfig, getConfig, parseShellApprovalMode, setConfig } from './config.js';
+import { CodekConfig, ModelProfile, getConfig, parseShellApprovalMode, setConfig } from './config.js';
 import { loadDotEnv } from './env.js';
 import { getVerbose, setVerbose } from './logger.js';
+import { AgentEvent } from './types.js';
 
 type CliOptions = Partial<CodekConfig> & {
     help?: boolean;
@@ -39,7 +41,10 @@ Interactive commands:
   /help                show this help
   /clear               clear conversation context
   /log                 show or change verbose logging: /log on, /log off, /log toggle
-  /model               show current model
+  /model               choose model interactively
+  /model current       show current model
+  /model list          list supported models
+  /model <name>        switch to a model by name
   /exit                quit`;
 
 function readPackageVersion() {
@@ -127,84 +132,155 @@ function normalizeConfig(options: CliOptions): CodekConfig {
     return config;
 }
 
-function interactiveLogSelect(current: boolean): Promise<boolean> {
+type SelectOption<T> = {
+    value: T;
+    label: string;
+    description?: string;
+};
+
+function interactiveSelect<T>(
+    title: string,
+    options: Array<SelectOption<T>>,
+    currentValue: T,
+): Promise<T> {
     return new Promise((resolve) => {
         const stdin = process.stdin;
         const stdout = process.stdout;
 
-        if (!stdin.isTTY) {
-            // fallback: no TTY, can't do interactive
-            resolve(current);
+        if (!stdin.isTTY || !stdout.isTTY || !stdin.setRawMode) {
+            resolve(currentValue);
             return;
         }
 
-        let selected = current; // true = ON, false = OFF
+        const initialIndex = Math.max(0, options.findIndex(option => Object.is(option.value, currentValue)));
+        let selectedIndex = initialIndex;
         let firstRender = true;
 
-        // Hide cursor
         stdout.write('\x1b[?25l');
 
         const render = () => {
             if (firstRender) {
                 firstRender = false;
             } else {
-                // Clear previous 5 lines of menu
-                stdout.write('\x1b[5A\x1b[J');
+                stdout.write(`\x1b[${options.length + 3}A\x1b[J`);
             }
-            stdout.write('--- Log Output ---\n');
-            if (selected) {
-                stdout.write('> ON              \n');
-                stdout.write('  OFF             \n');
-            } else {
-                stdout.write('  ON              \n');
-                stdout.write('> OFF             \n');
+
+            stdout.write(`--- ${title} ---\n`);
+            for (let index = 0; index < options.length; index++) {
+                const option = options[index];
+                const selected = index === selectedIndex;
+                const prefix = selected ? '\x1b[7m' : '';
+                const suffix = selected ? '\x1b[0m' : '';
+                const description = option.description ? ` - ${option.description}` : '';
+                stdout.write(`  ${prefix}${option.label}${description}${suffix}\n`);
             }
-            stdout.write('------------------\n');
             stdout.write('Use ↑↓ to change, Enter to confirm\n');
         };
 
         const cleanup = () => {
-            stdin.removeListener('data', onData);
+            stdin.off('keypress', onKeypress);
             stdin.setRawMode(false);
-            stdout.write('\x1b[?25h'); // show cursor
-            // Clear the menu (5 lines)
-            stdout.write('\x1b[5A\x1b[J');
+            stdout.write('\x1b[?25h');
+            stdout.write(`\x1b[${options.length + 3}A\x1b[J`);
         };
 
-        const onData = (buf: Buffer) => {
-            const key = buf.toString();
-
-            if (key === '\x1b[A') {
-                // Up arrow
-                selected = !selected;
+        const onKeypress = (_str: string, key: readline.Key) => {
+            if (key.name === 'up') {
+                selectedIndex = (selectedIndex + options.length - 1) % options.length;
                 render();
-            } else if (key === '\x1b[B') {
-                // Down arrow
-                selected = !selected;
-                render();
-            } else if (key === '\r' || key === '\n') {
-                // Enter
-                cleanup();
-                resolve(selected);
-            } else if (key === '\x03') {
-                // Ctrl+C
-                cleanup();
-                // Insert a newline so terminal doesn't look broken
-                stdout.write('\n');
-                resolve(current); // keep original
-            } else if (key === '\x1b') {
-                // Escape
-                cleanup();
-                resolve(current); // keep original
+                return;
             }
-            // Ignore other keys
+
+            if (key.name === 'down') {
+                selectedIndex = (selectedIndex + 1) % options.length;
+                render();
+                return;
+            }
+
+            if (key.name === 'return') {
+                cleanup();
+                resolve(options[selectedIndex].value);
+                return;
+            }
+
+            if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+                cleanup();
+                stdout.write('\n');
+                resolve(currentValue);
+            }
         };
 
+        readline.emitKeypressEvents(stdin);
         stdin.setRawMode(true);
         stdin.resume();
-        stdin.on('data', onData);
+        stdin.on('keypress', onKeypress);
         render();
     });
+}
+
+function interactiveLogSelect(current: boolean): Promise<boolean> {
+    return interactiveSelect('Log Output', [
+        { value: true, label: 'ON' },
+        { value: false, label: 'OFF' },
+    ], current);
+}
+
+function modelOptions(config: CodekConfig): Array<SelectOption<string>> {
+    const seen = new Set<string>();
+    const profiles: ModelProfile[] = config.modelProfiles.filter(profile => {
+        if (seen.has(profile.id)) return false;
+        seen.add(profile.id);
+        return true;
+    });
+    if (!seen.has(config.model)) {
+        profiles.unshift({ id: config.model, label: config.model });
+    }
+
+    return profiles.map(profile => ({
+        value: profile.id,
+        label: profile.id === config.model ? `${profile.label} (current)` : profile.label,
+        description: profile.description,
+    }));
+}
+
+function printModelList(config: CodekConfig) {
+    output.write(`Current model: ${config.model}\n`);
+    output.write('Supported models:\n');
+    for (const option of modelOptions(config)) {
+        const marker = option.value === config.model ? '*' : ' ';
+        const description = option.description ? ` - ${option.description}` : '';
+        output.write(` ${marker} ${option.value}${description}\n`);
+    }
+}
+
+function renderAgentEvent(event: AgentEvent) {
+    switch (event.type) {
+        case 'status':
+            if (event.status === 'done') {
+                process.stderr.write('[done] ready\n');
+                return;
+            }
+            if (event.status === 'error') {
+                process.stderr.write(`[error] ${event.message ?? 'failed'}\n`);
+                return;
+            }
+            process.stderr.write(`[${event.status}] ${event.message ?? ''}\n`);
+            return;
+        case 'step':
+            process.stderr.write(`[step] ${event.step}/${event.maxSteps}\n`);
+            return;
+        case 'tool_start':
+            process.stderr.write(`[tool] ${event.name} started\n`);
+            return;
+        case 'tool_end':
+            process.stderr.write(`[tool] ${event.name} ${event.ok ? 'finished' : 'failed'}\n`);
+            return;
+        case 'error':
+            process.stderr.write(`[error] ${event.message}\n`);
+            return;
+        case 'model':
+            return;
+    }
 }
 
 async function runInteractive(agent: CodekAgent, config: CodekConfig) {
@@ -268,7 +344,38 @@ async function runInteractive(agent: CodekAgent, config: CodekConfig) {
         }
 
         if (line === '/model') {
-            output.write(`${config.model}\n`);
+            output.write('\n');
+            const selectedModel = await interactiveSelect('Model', modelOptions(config), config.model);
+            if (selectedModel !== config.model) {
+                config.model = selectedModel;
+                agent.setModel(selectedModel);
+                output.write(`Model switched to ${selectedModel}.\n`);
+            } else {
+                output.write(`Model unchanged: ${config.model}\n`);
+            }
+            continue;
+        }
+
+        if (line === '/model current') {
+            output.write(`${agent.getModel()}\n`);
+            continue;
+        }
+
+        if (line === '/model list' || line === '/models') {
+            printModelList(config);
+            continue;
+        }
+
+        if (line.startsWith('/model ')) {
+            const model = line.slice('/model'.length).trim();
+            if (!model) {
+                output.write('Usage: /model, /model current, /model list, or /model <name>\n');
+                continue;
+            }
+
+            config.model = model;
+            agent.setModel(model);
+            output.write(`Model switched to ${model}.\n`);
             continue;
         }
 
@@ -299,7 +406,7 @@ async function main() {
     }
 
     const config = normalizeConfig(options);
-    const agent = new CodekAgent(config);
+    const agent = new CodekAgent(config, renderAgentEvent);
 
     if (options.prompt) {
         const result = await agent.run(options.prompt);

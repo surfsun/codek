@@ -37,7 +37,8 @@ Optional environment variables:
 ```bash
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 export CODEK_MODEL="google/gemma-4-e4b"
-export CODEK_MAX_STEPS="20"
+export CODEK_MODELS="deepseek-v4-flash,google/gemma-4-e4b,gpt-4.1,gpt-4.1-mini"
+export CODEK_MAX_STEPS="50"
 export CODEK_SHELL_APPROVAL_MODE="model"
 ```
 
@@ -95,7 +96,13 @@ Interactive commands:
 /help    show commands
 /clear   clear conversation history
 /log     show or change verbose logging: /log on, /log off, /log toggle
-/model   show current model
+/model   choose model interactively
+/model current
+         show current model
+/model list
+         list supported models
+/model <name>
+         switch to a model by name
 /exit    quit
 ```
 

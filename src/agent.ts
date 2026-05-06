@@ -22,7 +22,7 @@ type CodekMessage =
 import { CodekConfig } from './config.js';
 import { logger } from './logger.js';
 import { createTools, runTool } from './runtime.js';
-import { AgentAction, ToolDefinition } from './types.js';
+import { AgentAction, AgentEvent, ToolDefinition } from './types.js';
 
 function buildSystemPrompt(tools: ToolDefinition[]) {
     const fallbackTools = tools.map(tool => ({
@@ -112,10 +112,25 @@ export class CodekAgent {
     private readonly openAITools: ChatCompletionTool[];
     private messages: CodekMessage[];
 
-    constructor(private readonly config: CodekConfig) {
+    constructor(
+        private readonly config: CodekConfig,
+        private readonly onEvent?: (event: AgentEvent) => void,
+    ) {
         this.tools = createTools(config);
         this.openAITools = toOpenAITools(this.tools);
         this.messages = [{ role: 'system', content: buildSystemPrompt(this.tools) }];
+    }
+
+    private emit(event: AgentEvent) {
+        this.onEvent?.(event);
+    }
+
+    setModel(model: string) {
+        this.config.model = model;
+    }
+
+    getModel() {
+        return this.config.model;
     }
 
     clear() {
@@ -128,12 +143,15 @@ export class CodekAgent {
             baseURL: this.config.baseURL,
         });
 
+        this.emit({ type: 'status', status: 'building_context', message: 'Adding user request to context' });
         this.messages.push({ role: 'user', content: input });
         const needsTool = requestLikelyNeedsTool(input);
         let successfulTool = false;
 
         for (let step = 1; step <= this.config.maxSteps; step++) {
             logger.step(`agent step ${step}`);
+            this.emit({ type: 'step', step, maxSteps: this.config.maxSteps });
+            this.emit({ type: 'status', status: 'calling_model', message: `Calling ${this.config.model}` });
 
             const response = await this.client.chat.completions.create({
                 model: this.config.model,
@@ -147,6 +165,9 @@ export class CodekAgent {
             const text = message?.content ?? '';
             const reasoningContent = (message as any)?.reasoning_content ?? undefined;
             logger.info(`model: ${text}`);
+            if (text.trim()) {
+                this.emit({ type: 'model', content: text });
+            }
 
             if (!message) {
                 this.messages.push({
@@ -162,8 +183,11 @@ export class CodekAgent {
                 if (fallbackAction?.type === 'tool') {
                     this.messages.push({ role: 'assistant', content: text, reasoning_content: reasoningContent });
 
+                    this.emit({ type: 'tool_start', name: fallbackAction.name });
+                    this.emit({ type: 'status', status: 'running_tool', message: fallbackAction.name });
                     const result = await runTool(this.tools, fallbackAction.name, fallbackAction.input ?? {});
                     successfulTool ||= result.ok;
+                    this.emit({ type: 'tool_end', name: fallbackAction.name, ok: result.ok });
                     logger.tool(`${fallbackAction.name}: ${result.content}`);
 
                     this.messages.push({
@@ -188,6 +212,7 @@ export class CodekAgent {
                         continue;
                     }
 
+                    this.emit({ type: 'status', status: 'done' });
                     return fallbackAction.content;
                 }
 
@@ -200,6 +225,7 @@ export class CodekAgent {
                     continue;
                 }
 
+                this.emit({ type: 'status', status: 'done' });
                 return text;
             }
 
@@ -221,8 +247,11 @@ export class CodekAgent {
 
                     toolName = call.function.name;
                     const input = parseToolArguments(call);
+                    this.emit({ type: 'tool_start', name: call.function.name });
+                    this.emit({ type: 'status', status: 'running_tool', message: call.function.name });
                     const result = await runTool(this.tools, call.function.name, input);
                     successfulTool ||= result.ok;
+                    this.emit({ type: 'tool_end', name: call.function.name, ok: result.ok });
                     resultContent = JSON.stringify({
                         ok: result.ok,
                         content: result.content.slice(0, 30_000),
@@ -231,6 +260,8 @@ export class CodekAgent {
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
                     resultContent = JSON.stringify({ ok: false, content: message });
+                    this.emit({ type: 'tool_end', name: toolName, ok: false });
+                    this.emit({ type: 'error', message });
                     logger.tool(`${toolName}: ${message}`);
                 }
 
@@ -242,6 +273,7 @@ export class CodekAgent {
             }
         }
 
+        this.emit({ type: 'status', status: 'error', message: `Stopped after ${this.config.maxSteps} steps` });
         return `Stopped after ${this.config.maxSteps} steps without a final answer.`;
     }
 }

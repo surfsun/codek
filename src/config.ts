@@ -5,6 +5,7 @@ loadDotEnv();
 
 export type CodekConfig = {
     model: string;
+    modelProfiles: ModelProfile[];
     maxSteps: number;
     cwd: string;
     apiKey: string;
@@ -14,6 +15,48 @@ export type CodekConfig = {
 };
 
 export type ShellApprovalMode = 'ask' | 'model' | 'allow';
+
+export type ModelProfile = {
+    id: string;
+    label: string;
+    description?: string;
+};
+
+export const defaultModelProfiles: ModelProfile[] = [
+    {
+        id: 'deepseek-v4-flash',
+        label: 'DeepSeek V4 Flash',
+        description: 'Default balanced local-compatible model.',
+    },
+    {
+        id: 'google/gemma-4-e4b',
+        label: 'Gemma 4 E4B',
+        description: 'Small local model profile used by earlier codek defaults.',
+    },
+    {
+        id: 'gpt-4.1',
+        label: 'GPT-4.1',
+        description: 'General-purpose OpenAI model.',
+    },
+    {
+        id: 'gpt-4.1-mini',
+        label: 'GPT-4.1 Mini',
+        description: 'Fast, lower-cost OpenAI model.',
+    },
+];
+
+function parseModelProfiles(value: string | undefined): ModelProfile[] | undefined {
+    if (!value) return undefined;
+
+    const ids = value
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+
+    if (ids.length === 0) return undefined;
+
+    return ids.map(id => ({ id, label: id }));
+}
 
 export function parseShellApprovalMode(value: string | undefined): ShellApprovalMode | undefined {
     if (!value) return undefined;
@@ -27,12 +70,13 @@ export function parseShellApprovalMode(value: string | undefined): ShellApproval
 
 const defaultConfig: CodekConfig = {
     model: process.env.CODEK_MODEL || process.env.OPENAI_MODEL || 'deepseek-v4-flash',
+    modelProfiles: parseModelProfiles(process.env.CODEK_MODELS) ?? defaultModelProfiles,
     maxSteps: Number(process.env.CODEK_MAX_STEPS || 50),
     cwd: path.resolve(process.cwd()),
     apiKey: process.env.OPENAI_API_KEY || 'codek-local',
     baseURL: process.env.OPENAI_BASE_URL || 'http://127.0.0.1:1234/v1',
     shellApprovalMode: 'ask',
-    verbose: true,
+    verbose: false,
 };
 
 let config = { ...defaultConfig };
