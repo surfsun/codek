@@ -29,7 +29,7 @@ export async function runShell(cmd: string, options: ShellOptions): Promise<stri
     }
 
     if (needsApproval) {
-        const decision = await confirmExecution(cmd, reason);
+        const decision = await confirmExecution(cmd, reason, options.cwd);
 
         if (decision === 'reject') {
             return 'Command rejected by user. Stop the current task and return a brief final answer.';

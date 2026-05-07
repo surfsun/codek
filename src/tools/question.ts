@@ -1,16 +1,32 @@
 import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
+import { selectMany, selectOne } from '../terminal/ui.js';
 
 export async function askQuestion(
   question: string,
   options: Array<{ label: string; description?: string }>,
   multiSelect: boolean,
 ): Promise<string> {
+  if (input.isTTY && output.isTTY && typeof input.setRawMode === 'function') {
+    const selectOptions = options.map(option => ({
+      value: option.label,
+      label: option.label,
+      description: option.description,
+    }));
+
+    if (multiSelect) {
+      const selected = await selectMany(question, selectOptions);
+      return selected.length > 0 ? selected.join(', ') : options[0]?.label || 'canceled';
+    }
+
+    return selectOne(question, selectOptions, options[0]?.label || 'canceled');
+  }
+
   output.write(`\n${question}\n`);
   for (let i = 0; i < options.length; i++) {
     output.write(`  ${i + 1}. ${options[i].label}`);
     if (options[i].description) {
-      output.write(` — ${options[i].description}`);
+      output.write(` - ${options[i].description}`);
     }
     output.write('\n');
   }

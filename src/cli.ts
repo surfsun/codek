@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { createInterface } from 'readline/promises';
-import * as readline from 'readline';
 import { readFileSync } from 'fs';
 import { stdin as input, stdout as output } from 'process';
 import { CodekAgent } from './agent.js';
@@ -10,7 +9,8 @@ import { configureLogger, getVerbose, logger, setVerbose } from './logger.js';
 import { JsonlConversationArchive, NullConversationArchive } from './storage/archive.js';
 import { JsonMemoryStore, NullMemoryStore } from './storage/memory.js';
 import { JsonlSummaryStore, NullSummaryStore } from './storage/summary.js';
-import { AgentEvent, MemoryStore, SummaryStore } from './types.js';
+import { MemoryStore, SummaryStore } from './types.js';
+import { SelectOption, TerminalStatus, printBanner, printDoctor, printStatus, selectOne } from './terminal/ui.js';
 
 type CliOptions = Partial<CodekConfig> & {
     help?: boolean;
@@ -43,6 +43,8 @@ Options:
 
 Interactive commands:
   /help                show this help
+  /status              show current configuration and storage paths
+  /doctor              show runtime and configuration diagnostics
   /clear               clear conversation context
   /log                 show or change terminal debug output: /log on, /log off
   /model               choose model interactively
@@ -167,94 +169,8 @@ function createSessionId() {
     return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
-type SelectOption<T> = {
-    value: T;
-    label: string;
-    description?: string;
-};
-
-function interactiveSelect<T>(
-    title: string,
-    options: Array<SelectOption<T>>,
-    currentValue: T,
-): Promise<T> {
-    return new Promise((resolve) => {
-        const stdin = process.stdin;
-        const stdout = process.stdout;
-
-        if (!stdin.isTTY || !stdout.isTTY || !stdin.setRawMode) {
-            resolve(currentValue);
-            return;
-        }
-
-        const initialIndex = Math.max(0, options.findIndex(option => Object.is(option.value, currentValue)));
-        let selectedIndex = initialIndex;
-        let firstRender = true;
-
-        stdout.write('\x1b[?25l');
-
-        const render = () => {
-            if (firstRender) {
-                firstRender = false;
-            } else {
-                stdout.write(`\x1b[${options.length + 3}A\x1b[J`);
-            }
-
-            stdout.write(`--- ${title} ---\n`);
-            for (let index = 0; index < options.length; index++) {
-                const option = options[index];
-                const selected = index === selectedIndex;
-                const prefix = selected ? '\x1b[7m' : '';
-                const suffix = selected ? '\x1b[0m' : '';
-                const description = option.description ? ` - ${option.description}` : '';
-                stdout.write(`  ${prefix}${option.label}${description}${suffix}\n`);
-            }
-            stdout.write('Use ↑↓ to change, Enter to confirm\n');
-        };
-
-        const cleanup = () => {
-            stdin.off('keypress', onKeypress);
-            stdin.setRawMode(false);
-            stdout.write('\x1b[?25h');
-            stdout.write(`\x1b[${options.length + 3}A\x1b[J`);
-        };
-
-        const onKeypress = (_str: string, key: readline.Key) => {
-            if (key.name === 'up') {
-                selectedIndex = (selectedIndex + options.length - 1) % options.length;
-                render();
-                return;
-            }
-
-            if (key.name === 'down') {
-                selectedIndex = (selectedIndex + 1) % options.length;
-                render();
-                return;
-            }
-
-            if (key.name === 'return') {
-                cleanup();
-                resolve(options[selectedIndex].value);
-                return;
-            }
-
-            if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
-                cleanup();
-                stdout.write('\n');
-                resolve(currentValue);
-            }
-        };
-
-        readline.emitKeypressEvents(stdin);
-        stdin.setRawMode(true);
-        stdin.resume();
-        stdin.on('keypress', onKeypress);
-        render();
-    });
-}
-
 function interactiveLogSelect(current: boolean): Promise<boolean> {
-    return interactiveSelect('Log Output', [
+    return selectOne('Log Output', [
         { value: true, label: 'ON' },
         { value: false, label: 'OFF' },
     ], current);
@@ -285,83 +201,6 @@ function printModelList(config: CodekConfig) {
         const marker = option.value === config.model ? '*' : ' ';
         const description = option.description ? ` - ${option.description}` : '';
         output.write(` ${marker} ${option.value}${description}\n`);
-    }
-}
-
-class TerminalStatus {
-    private startedAt = Date.now();
-    private hasStatus = false;
-    private streamed = false;
-
-    reset() {
-        this.startedAt = Date.now();
-        this.streamed = false;
-        this.clear();
-    }
-
-    didStream() {
-        return this.streamed;
-    }
-
-    handle(event: AgentEvent) {
-        logger.event('agent_event', event as unknown as Record<string, unknown>);
-
-        switch (event.type) {
-            case 'status':
-                if (event.status === 'thinking') {
-                    this.render('thinking');
-                    return;
-                }
-                if (event.status === 'archiving') {
-                    this.render('saving history');
-                    return;
-                }
-                if (event.status === 'summarizing') {
-                    this.render('saving summary');
-                    return;
-                }
-                if (event.status === 'done') {
-                    this.clear();
-                    return;
-                }
-                if (event.status === 'error') {
-                    this.clear();
-                    process.stderr.write(`[error] ${event.message ?? 'failed'}\n`);
-                    return;
-                }
-                return;
-            case 'tool_start':
-                this.render(`running ${event.name}`);
-                return;
-            case 'tool_end':
-                this.render(`${event.name} ${event.ok ? 'done' : 'failed'}`);
-                return;
-            case 'assistant_delta':
-                this.clear();
-                this.streamed = true;
-                output.write(event.content);
-                return;
-            case 'error':
-                this.clear();
-                process.stderr.write(`[error] ${event.message}\n`);
-                return;
-            case 'step':
-            case 'model':
-                return;
-        }
-    }
-
-    private render(label: string) {
-        if (!process.stderr.isTTY) return;
-        const elapsed = Math.max(0, Math.round((Date.now() - this.startedAt) / 1000));
-        process.stderr.write(`\r\x1b[2Kcodek | ${label} | ${elapsed}s`);
-        this.hasStatus = true;
-    }
-
-    clear() {
-        if (!this.hasStatus || !process.stderr.isTTY) return;
-        process.stderr.write('\r\x1b[2K');
-        this.hasStatus = false;
     }
 }
 
@@ -448,15 +287,7 @@ async function runInteractive(
     terminalStatus: TerminalStatus,
 ) {
     let rl = createInterface({ input, output });
-    output.write(`codek ${readPackageVersion()} (${config.model})\n`);
-    output.write(`cwd: ${config.cwd}\n`);
-    output.write(`api: ${config.baseURL}\n`);
-    output.write(`shell approval: ${config.shellApprovalMode}\n`);
-    output.write(`history: ${config.historyEnabled ? config.historyPath : 'disabled'}\n`);
-    output.write(`memory: ${config.memoryEnabled ? config.memoryPath : 'disabled'}\n`);
-    output.write(`summaries: ${config.summaryEnabled ? config.summaryPath : 'disabled'}\n`);
-    output.write(`logs: ${config.logEnabled ? config.logDir : 'disabled'}\n`);
-    output.write('Type /help for commands.\n\n');
+    printBanner(readPackageVersion(), config);
 
     while (true) {
         let line: string;
@@ -478,6 +309,16 @@ async function runInteractive(
 
         if (line === '/help') {
             output.write(`${helpText}\n`);
+            continue;
+        }
+
+        if (line === '/status') {
+            printStatus(config);
+            continue;
+        }
+
+        if (line === '/doctor') {
+            printDoctor(config);
             continue;
         }
 
@@ -531,7 +372,7 @@ async function runInteractive(
 
         if (line === '/model') {
             output.write('\n');
-            const selectedModel = await interactiveSelect('Model', modelOptions(config), config.model);
+            const selectedModel = await selectOne('Model', modelOptions(config), config.model);
             if (selectedModel !== config.model) {
                 config.model = selectedModel;
                 agent.setModel(selectedModel);

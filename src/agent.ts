@@ -24,6 +24,7 @@ import { logger } from './logger.js';
 import { buildInitialMessages } from './prompts/context.js';
 import { createTools, runTool } from './runtime.js';
 import { AgentAction, AgentEvent, ConversationArchive, MemoryRecord, SummaryStore, ToolDefinition } from './types.js';
+import { formatCommand } from './terminal/ui.js';
 
 function toOpenAITools(tools: ToolDefinition[]): ChatCompletionTool[] {
     return tools.map(tool => ({
@@ -71,6 +72,30 @@ function parseFallbackAction(text: string | null): AgentAction | null {
 
 function requestLikelyNeedsTool(input: string) {
     return /添加|修改|删除|修复|实现|更新|提交|commit|add|change|modify|delete|fix|implement|update|write/i.test(input);
+}
+
+function summarizeToolInput(name: string, input: Record<string, unknown>) {
+    if (name === 'bash' && typeof input.command === 'string') {
+        return formatCommand(input.command);
+    }
+
+    if ('path' in input && typeof input.path === 'string') {
+        return input.path;
+    }
+
+    if ('pattern' in input && typeof input.pattern === 'string') {
+        return input.pattern;
+    }
+
+    if ('question' in input && typeof input.question === 'string') {
+        return formatCommand(input.question, 72);
+    }
+
+    if ('id' in input && typeof input.id === 'string') {
+        return input.id;
+    }
+
+    return '';
 }
 
 type StreamedMessage = DeepSeekAssistantMessage & {
@@ -333,11 +358,13 @@ export class CodekAgent {
                         metadata: { fallbackAction: true },
                     });
 
-                    this.emit({ type: 'tool_start', name: fallbackAction.name });
+                    const input = fallbackAction.input ?? {};
+                    const startedAt = Date.now();
+                    this.emit({ type: 'tool_start', name: fallbackAction.name, inputSummary: summarizeToolInput(fallbackAction.name, input) });
                     this.emit({ type: 'status', status: 'running_tool', message: fallbackAction.name });
-                    const result = await runTool(this.tools, fallbackAction.name, fallbackAction.input ?? {});
+                    const result = await runTool(this.tools, fallbackAction.name, input);
                     successfulTool ||= result.ok;
-                    this.emit({ type: 'tool_end', name: fallbackAction.name, ok: result.ok });
+                    this.emit({ type: 'tool_end', name: fallbackAction.name, ok: result.ok, durationMs: Date.now() - startedAt });
                     logger.tool(`${fallbackAction.name}: ${result.content}`);
                     await this.archiveMessage({
                         role: 'tool',
@@ -409,11 +436,12 @@ export class CodekAgent {
 
                     toolName = call.function.name;
                     const input = parseToolArguments(call);
-                    this.emit({ type: 'tool_start', name: call.function.name });
+                    const startedAt = Date.now();
+                    this.emit({ type: 'tool_start', name: call.function.name, inputSummary: summarizeToolInput(call.function.name, input) });
                     this.emit({ type: 'status', status: 'running_tool', message: call.function.name });
                     const result = await runTool(this.tools, call.function.name, input);
                     successfulTool ||= result.ok;
-                    this.emit({ type: 'tool_end', name: call.function.name, ok: result.ok });
+                    this.emit({ type: 'tool_end', name: call.function.name, ok: result.ok, durationMs: Date.now() - startedAt });
                     resultContent = JSON.stringify({
                         ok: result.ok,
                         content: result.content.slice(0, 30_000),

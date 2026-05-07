@@ -27,8 +27,8 @@ export type AgentStatus =
 export type AgentEvent =
     | { type: 'status'; status: AgentStatus; message?: string }
     | { type: 'step'; step: number; maxSteps: number }
-    | { type: 'tool_start'; name: string }
-    | { type: 'tool_end'; name: string; ok: boolean }
+    | { type: 'tool_start'; name: string; inputSummary?: string }
+    | { type: 'tool_end'; name: string; ok: boolean; durationMs?: number }
     | { type: 'assistant_delta'; content: string }
     | { type: 'model'; content: string }
     | { type: 'error'; message: string };
