@@ -119,7 +119,7 @@ const defaultConfig: CodekConfig = {
     maxSteps: Number(process.env.CODEK_MAX_STEPS || 200),
     maxRunMs: Number(process.env.CODEK_MAX_RUN_MS || 10 * 60 * 1000),
     cwd: path.resolve(process.cwd()),
-    apiKey: process.env.OPENAI_API_KEY || 'codek-local',
+    apiKey: process.env.OPENAI_API_KEY || 'codek-local',//从.env读取
     baseURL: process.env.OPENAI_BASE_URL || 'http://127.0.0.1:1234/v1',
     shellApprovalMode: 'ask',
     verbose: false,
