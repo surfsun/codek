@@ -51,9 +51,8 @@ Interactive commands:
   /doctor              show runtime and configuration diagnostics
   /clear               clear conversation context
   /log                 show or change terminal debug output: /log on, /log off
-  /llm                 show LLM recording status
+  /llm                 toggle live LLM trace with an interactive picker
   /llm list            browse recorded LLM requests and responses
-  /llm live            show or change live LLM trace: /llm live on, /llm live full, /llm live off
   /model               choose model interactively
   /model current       show current model
   /model list          list supported models
@@ -196,6 +195,13 @@ function interactiveLogSelect(current: boolean): Promise<boolean> {
         { value: true, label: 'ON' },
         { value: false, label: 'OFF' },
     ], current);
+}
+
+function interactiveLlmTraceSelect(current: LlmTraceMode): Promise<LlmTraceMode> {
+    return selectOne('Live LLM Trace', [
+        { value: 'compact', label: 'ON', description: 'show live model traffic in the terminal' },
+        { value: 'off', label: 'OFF', description: 'record to llm.jsonl without live terminal output' },
+    ], current === 'full' ? 'compact' : current);
 }
 
 function parseInteractiveLlmTraceMode(mode: string): LlmTraceMode | null {
@@ -402,20 +408,15 @@ async function runInteractive(
 
         if (line === '/llm') {
             output.write(`LLM recording: ${config.logEnabled ? 'on' : 'off'}\n`);
-            output.write(`LLM log: ${getLlmLogPath() || 'inactive'}\n`);
-            output.write(`Live trace: ${config.llmTrace}\n`);
-            output.write('Usage: /llm list, /llm live on, /llm live full, or /llm live off\n');
+            output.write(`LLM log: ${getLlmLogPath() || 'inactive'}\n\n`);
+            const mode = await interactiveLlmTraceSelect(config.llmTrace);
+            config.llmTrace = mode;
+            output.write(`Live LLM trace ${mode === 'off' ? 'disabled' : 'enabled'}.\n`);
             continue;
         }
 
         if (line === '/llm list') {
             await viewLlmLog(getLlmLogPath(), rl);
-            continue;
-        }
-
-        if (line === '/llm live') {
-            output.write(`Live trace: ${config.llmTrace}\n`);
-            output.write('Usage: /llm live on, /llm live full, or /llm live off\n');
             continue;
         }
 

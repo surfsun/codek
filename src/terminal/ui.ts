@@ -76,6 +76,17 @@ function supportsInteractiveSelect() {
     return input.isTTY && output.isTTY && typeof input.setRawMode === 'function';
 }
 
+function clearRenderedBlock(lineCount: number) {
+    if (lineCount <= 0) return;
+    output.write(`\x1b[${lineCount}A\x1b[J`);
+}
+
+function truncateLine(value: string, reservedColumns = 0) {
+    const columns = Math.max(20, (output.columns || 80) - reservedColumns);
+    if (value.length <= columns) return value;
+    return `${value.slice(0, columns - 1)}...`;
+}
+
 export function selectOne<T>(
     title: string,
     options: Array<SelectOption<T>>,
@@ -90,6 +101,7 @@ export function selectOne<T>(
         const initialIndex = Math.max(0, options.findIndex(option => Object.is(option.value, currentValue)));
         let selectedIndex = initialIndex;
         let firstRender = true;
+        let renderedLines = 0;
 
         output.write('\x1b[?25l');
 
@@ -97,26 +109,30 @@ export function selectOne<T>(
             if (firstRender) {
                 firstRender = false;
             } else {
-                output.write(`\x1b[${options.length + 3}A\x1b[J`);
+                clearRenderedBlock(renderedLines);
             }
 
             output.write(`${title}\n`);
+            renderedLines = 1;
             for (let index = 0; index < options.length; index++) {
                 const option = options[index];
                 const selected = index === selectedIndex;
                 const prefix = selected ? '\x1b[7m' : '';
                 const suffix = selected ? '\x1b[0m' : '';
                 const description = option.description ? ` - ${option.description}` : '';
-                output.write(`  ${prefix}${option.label}${description}${suffix}\n`);
+                output.write(`  ${prefix}${truncateLine(`${option.label}${description}`, 2)}${suffix}\n`);
+                renderedLines++;
             }
             output.write('Use up/down and Enter. Esc cancels.\n');
+            renderedLines++;
         };
 
         const cleanup = () => {
             input.off('keypress', onKeypress);
             input.setRawMode(false);
             output.write('\x1b[?25h');
-            output.write(`\x1b[${options.length + 3}A\x1b[J`);
+            clearRenderedBlock(renderedLines);
+            renderedLines = 0;
         };
 
         const onKeypress = (_str: string, key: readline.Key) => {
@@ -166,6 +182,7 @@ export function selectMany(
         const selected = new Set<number>();
         let selectedIndex = 0;
         let firstRender = true;
+        let renderedLines = 0;
 
         output.write('\x1b[?25l');
 
@@ -173,10 +190,11 @@ export function selectMany(
             if (firstRender) {
                 firstRender = false;
             } else {
-                output.write(`\x1b[${options.length + 3}A\x1b[J`);
+                clearRenderedBlock(renderedLines);
             }
 
             output.write(`${title}\n`);
+            renderedLines = 1;
             for (let index = 0; index < options.length; index++) {
                 const option = options[index];
                 const focused = index === selectedIndex;
@@ -184,16 +202,19 @@ export function selectMany(
                 const suffix = focused ? '\x1b[0m' : '';
                 const marker = selected.has(index) ? '[x]' : '[ ]';
                 const description = option.description ? ` - ${option.description}` : '';
-                output.write(`  ${prefix}${marker} ${option.label}${description}${suffix}\n`);
+                output.write(`  ${prefix}${truncateLine(`${marker} ${option.label}${description}`, 2)}${suffix}\n`);
+                renderedLines++;
             }
             output.write('Use up/down, Space to select, Enter to confirm. Esc cancels.\n');
+            renderedLines++;
         };
 
         const cleanup = () => {
             input.off('keypress', onKeypress);
             input.setRawMode(false);
             output.write('\x1b[?25h');
-            output.write(`\x1b[${options.length + 3}A\x1b[J`);
+            clearRenderedBlock(renderedLines);
+            renderedLines = 0;
         };
 
         const onKeypress = (_str: string, key: readline.Key) => {
@@ -451,6 +472,7 @@ export class TerminalStatus {
 
     private render(label: string) {
         if (!process.stderr.isTTY) return;
+        if (this.streamed) return;
         const elapsed = formatDuration(Date.now() - this.startedAt);
         const step = this.step > 0 ? `step ${this.step}/${this.maxSteps} | ` : '';
         process.stderr.write(`\r\x1b[2Kcodek | ${step}${label} | ${elapsed}`);

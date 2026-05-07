@@ -135,13 +135,9 @@ Interactive commands:
 /help    show commands
 /clear   clear conversation history
 /log     show or change terminal debug output: /log on, /log off
-/llm     show LLM recording status
+/llm     toggle live LLM trace with an interactive picker
 /llm list
          browse recorded LLM requests and responses
-/llm live on
-         show live LLM traffic in the terminal
-/llm live off
-         stop live LLM traffic output
 /model   choose model interactively
 /model current
          show current model

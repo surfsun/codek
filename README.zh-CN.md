@@ -136,13 +136,9 @@ Enter / 1   执行一次
 /help    显示命令
 /clear   清空对话上下文
 /log     查看或切换终端调试输出：/log on、/log off
-/llm     查看 LLM 记录状态
+/llm     用交互式选择器开关实时 LLM trace
 /llm list
          浏览已记录的 LLM 请求和响应
-/llm live on
-         在终端实时展示 LLM 交互
-/llm live off
-         停止实时展示 LLM 交互
 /model   交互式选择模型
 /model current
          显示当前模型
