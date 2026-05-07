@@ -25,12 +25,30 @@ OPENAI_BASE_URL=http://127.0.0.1:1234/v1
 OPENAI_API_KEY=codek-local
 ```
 
-You can also put your local service config in `.env`:
+After installing from npm, do not edit files inside the npm package directory. Put `.env` in one of these runtime locations:
+
+```text
+$HOME/.codek/.env        user defaults for every project
+<project>/.env           project-specific config; this is the directory where you run codek or pass with --cwd
+```
+
+You can also load an explicit file:
 
 ```bash
-export OPENAI_API_KEY="..."
-export OPENAI_BASE_URL="http://127.0.0.1:1234/v1"
+codek --env /path/to/codek.env
+CODEK_ENV_PATH=/path/to/codek.env codek
 ```
+
+`.env` values are loaded in this order: `$HOME/.codek/.env`, project `.env`, `CODEK_ENV_PATH`, then `--env`. Later files override earlier files, but real system environment variables and command-line flags still take precedence.
+
+Example `.env`:
+
+```bash
+OPENAI_API_KEY="..."
+OPENAI_BASE_URL="http://127.0.0.1:1234/v1"
+```
+
+Lines prefixed with `export` are also accepted.
 
 Optional environment variables:
 

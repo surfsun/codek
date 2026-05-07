@@ -3,7 +3,7 @@ import { createInterface } from 'readline/promises';
 import { readFileSync } from 'fs';
 import { stdin as input, stdout as output } from 'process';
 import { CodekAgent } from './agent.js';
-import { CodekConfig, ModelProfile, defaultHistoryPath, defaultLogDir, defaultMemoryPath, defaultSummaryPath, getConfig, parseBoolean, parseShellApprovalMode, setConfig } from './config.js';
+import { CodekConfig, ModelProfile, defaultHistoryPath, defaultLogDir, defaultMemoryPath, defaultSummaryPath, getConfig, parseBoolean, parseModelProfiles, parseShellApprovalMode, setConfig } from './config.js';
 import { loadDotEnv } from './env.js';
 import { configureLogger, getVerbose, logger, setVerbose } from './logger.js';
 import { JsonlConversationArchive, NullConversationArchive } from './storage/archive.js';
@@ -16,6 +16,7 @@ type CliOptions = Partial<CodekConfig> & {
     help?: boolean;
     version?: boolean;
     prompt?: string;
+    envPath?: string;
 };
 
 const helpText = `codek - terminal coding agent
@@ -27,6 +28,7 @@ Usage:
 Options:
   --model <name>       model name, defaults to CODEK_MODEL or deepseek-v4-flash
   --cwd <path>         working directory, defaults to current directory
+  --env <path>         load an extra .env file after user and project .env files
   --base-url <url>     OpenAI-compatible API URL, defaults to local service
   --api-key <key>      API key, defaults to OPENAI_API_KEY or codek-local
   --max-run <seconds>  maximum wall-clock time per request, defaults to 600
@@ -87,6 +89,9 @@ function parseArgs(argv: string[]): CliOptions {
             case '--cwd':
                 options.cwd = argv[++index];
                 break;
+            case '--env':
+                options.envPath = argv[++index];
+                break;
             case '--base-url':
                 options.baseURL = argv[++index];
                 break;
@@ -123,10 +128,11 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 function normalizeConfig(options: CliOptions): CodekConfig {
-    loadDotEnv(options.cwd);
+    loadDotEnv(options.cwd, options.envPath);
 
     setConfig({
         model: options.model ?? process.env.CODEK_MODEL ?? process.env.OPENAI_MODEL,
+        modelProfiles: parseModelProfiles(process.env.CODEK_MODELS) ?? getConfig().modelProfiles,
         cwd: options.cwd,
         apiKey: options.apiKey ?? process.env.OPENAI_API_KEY,
         baseURL: options.baseURL ?? process.env.OPENAI_BASE_URL,

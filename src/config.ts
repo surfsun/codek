@@ -56,7 +56,7 @@ export const defaultModelProfiles: ModelProfile[] = [
     },
 ];
 
-function parseModelProfiles(value: string | undefined): ModelProfile[] | undefined {
+export function parseModelProfiles(value: string | undefined): ModelProfile[] | undefined {
     if (!value) return undefined;
 
     const ids = value

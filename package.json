@@ -9,7 +9,8 @@
   "types": "dist/cli.d.ts",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "README.zh-CN.md"
   ],
   "engines": {
     "node": ">=20"
