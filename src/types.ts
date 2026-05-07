@@ -30,6 +30,10 @@ export type AgentEvent =
     | { type: 'tool_start'; name: string; inputSummary?: string }
     | { type: 'tool_end'; name: string; ok: boolean; durationMs?: number }
     | { type: 'assistant_delta'; content: string }
+    | { type: 'llm_request'; step: number; model: string; messages: Array<{ role: string; name?: string; content: string; toolCalls?: string[] }>; tools: string[] }
+    | { type: 'llm_response_start'; step: number }
+    | { type: 'llm_response_delta'; kind: 'reasoning' | 'content' | 'tool_call'; content: string }
+    | { type: 'llm_response_complete'; step: number; contentLength: number; reasoningLength: number; toolCalls: string[] }
     | { type: 'model'; content: string }
     | { type: 'error'; message: string };
 

@@ -3,9 +3,10 @@ import { createInterface } from 'readline/promises';
 import { readFileSync } from 'fs';
 import { stdin as input, stdout as output } from 'process';
 import { CodekAgent } from './agent.js';
-import { CodekConfig, ModelProfile, defaultHistoryPath, defaultLogDir, defaultMemoryPath, defaultSummaryPath, getConfig, parseBoolean, parseModelProfiles, parseShellApprovalMode, setConfig } from './config.js';
+import { CodekConfig, LlmTraceMode, ModelProfile, defaultHistoryPath, defaultLogDir, defaultMemoryPath, defaultSummaryPath, getConfig, parseBoolean, parseLlmTraceMode, parseModelProfiles, parseShellApprovalMode, setConfig } from './config.js';
 import { loadDotEnv } from './env.js';
-import { configureLogger, getVerbose, logger, setVerbose } from './logger.js';
+import { configureLogger, getLlmLogPath, getVerbose, logger, setVerbose } from './logger.js';
+import { viewLlmLog } from './llm-viewer.js';
 import { JsonlConversationArchive, NullConversationArchive } from './storage/archive.js';
 import { JsonMemoryStore, NullMemoryStore } from './storage/memory.js';
 import { JsonlSummaryStore, NullSummaryStore } from './storage/summary.js';
@@ -40,6 +41,7 @@ Options:
                        allow: always execute commands
   --yes, -y            alias for --shell-approval allow
   --verbose, -v        print model/tool trace to stderr
+  --llm-trace [mode]   show live LLM messages on stderr: compact or full
   --version            print version
   --help, -h           show help
 
@@ -49,6 +51,9 @@ Interactive commands:
   /doctor              show runtime and configuration diagnostics
   /clear               clear conversation context
   /log                 show or change terminal debug output: /log on, /log off
+  /llm                 show LLM recording status
+  /llm list            browse recorded LLM requests and responses
+  /llm live            show or change live LLM trace: /llm live on, /llm live full, /llm live off
   /model               choose model interactively
   /model current       show current model
   /model list          list supported models
@@ -115,6 +120,16 @@ function parseArgs(argv: string[]): CliOptions {
             case '-v':
                 options.verbose = true;
                 break;
+            case '--llm-trace': {
+                const next = argv[index + 1];
+                if (next && !next.startsWith('-') && parseInteractiveLlmTraceMode(next)) {
+                    options.llmTrace = parseLlmTraceMode(next);
+                    index++;
+                } else {
+                    options.llmTrace = 'compact';
+                }
+                break;
+            }
             default:
                 prompt.push(arg);
         }
@@ -144,6 +159,7 @@ function normalizeConfig(options: CliOptions): CodekConfig {
         memoryEnabled: process.env.CODEK_MEMORY === undefined ? undefined : parseBoolean(process.env.CODEK_MEMORY, true),
         summaryEnabled: process.env.CODEK_SUMMARIES === undefined ? undefined : parseBoolean(process.env.CODEK_SUMMARIES, true),
         logEnabled: process.env.CODEK_LOGS === undefined ? undefined : parseBoolean(process.env.CODEK_LOGS, true),
+        llmTrace: options.llmTrace ?? parseLlmTraceMode(process.env.CODEK_LLM_TRACE),
     });
 
     const config = getConfig();
@@ -180,6 +196,14 @@ function interactiveLogSelect(current: boolean): Promise<boolean> {
         { value: true, label: 'ON' },
         { value: false, label: 'OFF' },
     ], current);
+}
+
+function parseInteractiveLlmTraceMode(mode: string): LlmTraceMode | null {
+    try {
+        return parseLlmTraceMode(mode) ?? null;
+    } catch {
+        return null;
+    }
 }
 
 function modelOptions(config: CodekConfig): Array<SelectOption<string>> {
@@ -373,6 +397,42 @@ async function runInteractive(
             }
 
             output.write('Usage: /log, /log on, or /log off\n');
+            continue;
+        }
+
+        if (line === '/llm') {
+            output.write(`LLM recording: ${config.logEnabled ? 'on' : 'off'}\n`);
+            output.write(`LLM log: ${getLlmLogPath() || 'inactive'}\n`);
+            output.write(`Live trace: ${config.llmTrace}\n`);
+            output.write('Usage: /llm list, /llm live on, /llm live full, or /llm live off\n');
+            continue;
+        }
+
+        if (line === '/llm list') {
+            await viewLlmLog(getLlmLogPath(), rl);
+            continue;
+        }
+
+        if (line === '/llm live') {
+            output.write(`Live trace: ${config.llmTrace}\n`);
+            output.write('Usage: /llm live on, /llm live full, or /llm live off\n');
+            continue;
+        }
+
+        if (line.startsWith('/llm live ')) {
+            const mode = parseInteractiveLlmTraceMode(line.slice('/llm live'.length).trim());
+            if (!mode) {
+                output.write('Usage: /llm live on, /llm live full, or /llm live off\n');
+                continue;
+            }
+
+            config.llmTrace = mode;
+            output.write(`Live LLM trace ${mode === 'off' ? 'disabled' : `enabled (${mode})`}.\n`);
+            continue;
+        }
+
+        if (line.startsWith('/llm ')) {
+            output.write('Usage: /llm, /llm list, /llm live on, /llm live full, or /llm live off\n');
             continue;
         }
 

@@ -30,6 +30,14 @@ export function getVerbose() {
     return verbose;
 }
 
+export function getLlmLogPath() {
+    return llmPath;
+}
+
+export function isLoggerEnabled() {
+    return logEnabled;
+}
+
 function write(stream: NodeJS.WriteStream, label: string, msg: string) {
     stream.write(`[${label}] ${msg}\n`);
 }

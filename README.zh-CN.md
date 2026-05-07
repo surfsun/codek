@@ -67,12 +67,14 @@ export CODEK_SUMMARIES="on"
 export CODEK_SUMMARY_PATH="$HOME/.codek/projects/my-project/summaries.jsonl"
 export CODEK_LOGS="on"
 export CODEK_LOG_DIR="$HOME/.codek/projects/my-project/logs"
+export CODEK_LLM_TRACE="off"
 ```
 
 对话历史会以追加写入的 JSONL 文件保存在本地，便于后续总结和检索，而不需要每次都把完整历史发给模型。
 项目记忆会单独保存，并可在交互式命令行里显式管理。
 对话摘要会作为轻量索引保存。
 日志按 CLI 会话保存。`events.jsonl` 记录智能体和工具事件，`llm.jsonl` 记录模型请求参数和流式响应，主要用于调试。
+开启日志时，发送给模型的请求和模型响应会记录到 `llm.jsonl`。交互模式里使用 `/llm list` 可以按需查看这些记录，不会打断正常回答输出。只有需要实时追踪时，才使用 `CODEK_LLM_TRACE=compact` 或 `--llm-trace`。
 
 npm 安装后的 `codek` 默认会把用户数据保存到 `$HOME/.codek/projects/<project-hash>/`，不会写入 npm 包目录。
 
@@ -104,6 +106,8 @@ codek --shell-approval ask "运行测试"
 codek --shell-approval model "检查并修复 lint 错误"
 codek --shell-approval allow "运行测试并修复失败"
 codek --verbose "检查 CLI 入口"
+codek --llm-trace "回答时实时展示模型交互"
+codek --llm-trace full "调试完整实时 prompt 和响应流"
 ```
 
 shell 审批模式：
@@ -132,6 +136,13 @@ Enter / 1   执行一次
 /help    显示命令
 /clear   清空对话上下文
 /log     查看或切换终端调试输出：/log on、/log off
+/llm     查看 LLM 记录状态
+/llm list
+         浏览已记录的 LLM 请求和响应
+/llm live on
+         在终端实时展示 LLM 交互
+/llm live off
+         停止实时展示 LLM 交互
 /model   交互式选择模型
 /model current
          显示当前模型

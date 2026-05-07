@@ -23,9 +23,11 @@ export type CodekConfig = {
     summaryPath: string;
     logEnabled: boolean;
     logDir: string;
+    llmTrace: LlmTraceMode;
 };
 
 export type ShellApprovalMode = 'ask' | 'model' | 'allow';
+export type LlmTraceMode = 'off' | 'compact' | 'full';
 
 export type ModelProfile = {
     id: string;
@@ -113,6 +115,17 @@ export function parseShellApprovalMode(value: string | undefined): ShellApproval
     throw new Error(`Invalid shell approval mode: ${value}`);
 }
 
+export function parseLlmTraceMode(value: string | undefined): LlmTraceMode | undefined {
+    if (!value) return undefined;
+
+    const normalized = value.toLowerCase();
+    if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return 'off';
+    if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on' || normalized === 'compact') return 'compact';
+    if (normalized === 'full') return 'full';
+
+    throw new Error(`Invalid LLM trace mode: ${value}`);
+}
+
 const defaultConfig: CodekConfig = {
     model: process.env.CODEK_MODEL || process.env.OPENAI_MODEL || 'deepseek-v4-flash',
     modelProfiles: parseModelProfiles(process.env.CODEK_MODELS) ?? defaultModelProfiles,
@@ -131,6 +144,7 @@ const defaultConfig: CodekConfig = {
     summaryPath: process.env.CODEK_SUMMARY_PATH || defaultSummaryPath(path.resolve(process.cwd())),
     logEnabled: parseBoolean(process.env.CODEK_LOGS, true),
     logDir: process.env.CODEK_LOG_DIR || defaultLogDir(path.resolve(process.cwd())),
+    llmTrace: parseLlmTraceMode(process.env.CODEK_LLM_TRACE) ?? 'off',
 };
 
 let config = { ...defaultConfig };

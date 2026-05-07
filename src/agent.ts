@@ -107,6 +107,20 @@ function shouldBufferVisibleText(buffer: string) {
     return trimmed.startsWith('{') || trimmed.startsWith('```');
 }
 
+function stringifyMessageContent(content: unknown) {
+    if (typeof content === 'string') return content;
+    if (content === null || content === undefined) return '';
+    return JSON.stringify(content);
+}
+
+function truncateForTrace(content: string, mode: CodekConfig['llmTrace']) {
+    if (mode === 'full') return content;
+
+    const maxLength = 1_200;
+    if (content.length <= maxLength) return content;
+    return `${content.slice(0, maxLength)}\n... [truncated ${content.length - maxLength} chars; use --llm-trace full to show all]`;
+}
+
 export class CodekAgent {
     private client: OpenAI | null = null;
     private readonly tools: ToolDefinition[];
@@ -220,7 +234,27 @@ export class CodekAgent {
         }
     }
 
-    private async createCompletion(): Promise<StreamedMessage | null> {
+    private traceEnabled() {
+        return this.config.llmTrace !== 'off';
+    }
+
+    private traceMessages() {
+        return this.messages.map(message => {
+            const toolCalls = 'tool_calls' in message && Array.isArray((message as any).tool_calls)
+                ? (message as any).tool_calls.map((call: ChatCompletionMessageFunctionToolCall) => call.function?.name || call.id || 'tool_call')
+                : undefined;
+            const name = 'name' in message && typeof (message as any).name === 'string' ? (message as any).name : undefined;
+
+            return {
+                role: message.role,
+                name,
+                content: truncateForTrace(stringifyMessageContent(message.content), this.config.llmTrace),
+                toolCalls,
+            };
+        });
+    }
+
+    private async createCompletion(step: number): Promise<StreamedMessage | null> {
         const request = {
             model: this.config.model,
             messages: this.messages,
@@ -230,6 +264,16 @@ export class CodekAgent {
             stream: true as const,
         };
         logger.llm('request', request);
+        if (this.traceEnabled()) {
+            this.emit({
+                type: 'llm_request',
+                step,
+                model: this.config.model,
+                messages: this.traceMessages(),
+                tools: this.tools.map(tool => tool.name),
+            });
+            this.emit({ type: 'llm_response_start', step });
+        }
 
         const stream = await this.client!.chat.completions.create(request);
         let content = '';
@@ -245,10 +289,16 @@ export class CodekAgent {
 
             if (typeof delta.reasoning_content === 'string') {
                 reasoningContent += delta.reasoning_content;
+                if (this.traceEnabled()) {
+                    this.emit({ type: 'llm_response_delta', kind: 'reasoning', content: delta.reasoning_content });
+                }
             }
 
             if (typeof delta.content === 'string') {
                 content += delta.content;
+                if (this.traceEnabled()) {
+                    this.emit({ type: 'llm_response_delta', kind: 'content', content: delta.content });
+                }
 
                 if (visibleStarted) {
                     this.emit({ type: 'assistant_delta', content: delta.content });
@@ -275,8 +325,18 @@ export class CodekAgent {
 
                 if (partialCall.id) current.id = partialCall.id;
                 if (partialCall.type) current.type = partialCall.type;
-                if (partialCall.function?.name) current.function.name += partialCall.function.name;
-                if (partialCall.function?.arguments) current.function.arguments += partialCall.function.arguments;
+                if (partialCall.function?.name) {
+                    current.function.name += partialCall.function.name;
+                    if (this.traceEnabled()) {
+                        this.emit({ type: 'llm_response_delta', kind: 'tool_call', content: partialCall.function.name });
+                    }
+                }
+                if (partialCall.function?.arguments) {
+                    current.function.arguments += partialCall.function.arguments;
+                    if (this.traceEnabled()) {
+                        this.emit({ type: 'llm_response_delta', kind: 'tool_call', content: partialCall.function.arguments });
+                    }
+                }
                 toolCalls.set(index, current);
             }
         }
@@ -304,6 +364,15 @@ export class CodekAgent {
             reasoning_content: reasoningContent || undefined,
             tool_calls: orderedToolCalls,
         });
+        if (this.traceEnabled()) {
+            this.emit({
+                type: 'llm_response_complete',
+                step,
+                contentLength: content.length,
+                reasoningLength: reasoningContent.length,
+                toolCalls: orderedToolCalls.map(call => call.function.name || call.id),
+            });
+        }
         return message;
     }
 
@@ -331,7 +400,7 @@ export class CodekAgent {
             this.emit({ type: 'step', step, maxSteps: this.config.maxSteps });
             this.emit({ type: 'status', status: 'thinking', message: 'Thinking' });
 
-            const message = await this.createCompletion();
+            const message = await this.createCompletion(step);
             const text = typeof message?.content === 'string' ? message.content : '';
             const reasoningContent = (message as any)?.reasoning_content ?? undefined;
             logger.info(`model: ${text}`);

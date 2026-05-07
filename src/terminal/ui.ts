@@ -41,6 +41,8 @@ export function printStatus(config: CodekConfig) {
     output.write(`memory: ${config.memoryEnabled ? config.memoryPath : 'disabled'}\n`);
     output.write(`summaries: ${config.summaryEnabled ? config.summaryPath : 'disabled'}\n`);
     output.write(`logs: ${config.logEnabled ? config.logDir : 'disabled'}\n`);
+    output.write(`LLM recording: ${config.logEnabled ? 'on' : 'off'}\n`);
+    output.write(`LLM live trace: ${config.llmTrace}\n`);
 }
 
 export function printDoctor(config: CodekConfig) {
@@ -53,6 +55,21 @@ export function printDoctor(config: CodekConfig) {
     output.write(`  api key: ${config.apiKey ? 'set' : 'missing'}\n`);
     output.write(`  cwd: ${config.cwd}\n`);
     output.write(`  logs: ${config.logEnabled ? 'enabled' : 'disabled'}\n`);
+    output.write(`  LLM recording: ${config.logEnabled ? 'on' : 'off'}\n`);
+    output.write(`  LLM live trace: ${config.llmTrace}\n`);
+}
+
+function writeTraceHeader(title: string) {
+    process.stderr.write(`\n[llm] ${title}\n`);
+}
+
+function writeTraceBlock(label: string, content: string) {
+    process.stderr.write(`[llm] ${label}\n`);
+    if (content) {
+        process.stderr.write(`${content.endsWith('\n') ? content : `${content}\n`}`);
+    } else {
+        process.stderr.write('(empty)\n');
+    }
 }
 
 function supportsInteractiveSelect() {
@@ -329,12 +346,14 @@ export class TerminalStatus {
     private streamed = false;
     private step = 0;
     private maxSteps = 0;
+    private llmDeltaKind: string | null = null;
 
     reset() {
         this.startedAt = Date.now();
         this.streamed = false;
         this.step = 0;
         this.maxSteps = 0;
+        this.llmDeltaKind = null;
         this.clear();
     }
 
@@ -379,6 +398,43 @@ export class TerminalStatus {
                 this.clear();
                 this.streamed = true;
                 output.write(event.content);
+                return;
+            case 'llm_request':
+                this.clear();
+                writeTraceHeader(`request step ${event.step} | model ${event.model} | ${event.messages.length} messages`);
+                process.stderr.write(`[llm] tools: ${event.tools.join(', ') || 'none'}\n`);
+                for (let index = 0; index < event.messages.length; index++) {
+                    const message = event.messages[index];
+                    const suffix = message.name ? ` name=${message.name}` : '';
+                    writeTraceBlock(`message ${index + 1} ${message.role}${suffix}`, message.content);
+                    if (message.toolCalls?.length) {
+                        process.stderr.write(`[llm] tool calls: ${message.toolCalls.join(', ')}\n`);
+                    }
+                }
+                return;
+            case 'llm_response_start':
+                this.clear();
+                this.llmDeltaKind = null;
+                writeTraceHeader(`response step ${event.step}`);
+                return;
+            case 'llm_response_delta':
+                this.clear();
+                if (this.llmDeltaKind !== event.kind) {
+                    if (this.llmDeltaKind) {
+                        process.stderr.write('\n');
+                    }
+                    process.stderr.write(`[llm:${event.kind}] `);
+                    this.llmDeltaKind = event.kind;
+                }
+                process.stderr.write(event.content);
+                return;
+            case 'llm_response_complete':
+                this.clear();
+                if (this.llmDeltaKind) {
+                    process.stderr.write('\n');
+                    this.llmDeltaKind = null;
+                }
+                process.stderr.write(`[llm] response complete | content ${event.contentLength} chars | reasoning ${event.reasoningLength} chars | tool calls ${event.toolCalls.join(', ') || 'none'}\n`);
                 return;
             case 'error':
                 this.clear();

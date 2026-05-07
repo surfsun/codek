@@ -67,12 +67,14 @@ export CODEK_SUMMARIES="on"
 export CODEK_SUMMARY_PATH="$HOME/.codek/projects/my-project/summaries.jsonl"
 export CODEK_LOGS="on"
 export CODEK_LOG_DIR="$HOME/.codek/projects/my-project/logs"
+export CODEK_LLM_TRACE="off"
 ```
 
 Conversation history is archived locally as append-only JSONL. This keeps raw conversations available for later summarization and retrieval without sending every past message into each new prompt.
 Project memories are stored separately and can be managed explicitly from the interactive prompt.
 Conversation summaries are stored as a lightweight index for later retrieval.
 Logs are stored per CLI session. `events.jsonl` records agent/tool events, while `llm.jsonl` records model request parameters and streamed responses for debugging.
+LLM requests and responses are recorded to `llm.jsonl` when logs are enabled. Use `/llm list` in interactive mode to browse them without interrupting the normal answer stream. Use `CODEK_LLM_TRACE=compact` or `--llm-trace` only when you need live terminal tracing.
 
 By default, npm-installed `codek` stores user-owned data under `$HOME/.codek/projects/<project-hash>/` instead of inside the npm package directory.
 
@@ -103,6 +105,8 @@ codek --shell-approval ask "run tests"
 codek --shell-approval model "inspect and fix lint errors"
 codek --shell-approval allow "run tests and fix failures"
 codek --verbose "inspect the CLI entrypoint"
+codek --llm-trace "show live model traffic while answering"
+codek --llm-trace full "debug the full live prompt and response stream"
 ```
 
 Shell approval modes:
@@ -131,6 +135,13 @@ Interactive commands:
 /help    show commands
 /clear   clear conversation history
 /log     show or change terminal debug output: /log on, /log off
+/llm     show LLM recording status
+/llm list
+         browse recorded LLM requests and responses
+/llm live on
+         show live LLM traffic in the terminal
+/llm live off
+         stop live LLM traffic output
 /model   choose model interactively
 /model current
          show current model
